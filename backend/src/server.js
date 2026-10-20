@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 5000;
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
     console.log('✅ Connected to MongoDB');
-    app.listen(PORT, () => {
+    app.listen(PORT, '127.0.0.1', () => {
       console.log(`🚀 Server is running on \x1b[32m\x1b[4mhttp://localhost:${PORT}/api/items\x1b[0m`);
     });
   })
