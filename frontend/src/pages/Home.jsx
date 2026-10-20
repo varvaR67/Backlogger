@@ -82,43 +82,47 @@ export default function Home() {
           ))}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
           {filteredItems.map(item => (
-            <div key={item._id} className="group relative bg-slate-800 rounded-2xl border border-slate-700/50 p-5 hover:border-indigo-500/50 hover:shadow-xl hover:shadow-indigo-500/10 transition-all flex flex-col justify-between h-48">
+            <div key={item._id} className="group relative bg-slate-800 rounded-2xl border border-slate-700/50 hover:border-indigo-500/50 hover:shadow-xl hover:shadow-indigo-500/10 transition-all flex flex-col overflow-hidden h-72">
               
-              <div>
-                <div className="flex justify-between items-start mb-3">
-                  <h3 className="text-xl font-bold text-white leading-tight line-clamp-2 pr-6">
-                    {item.title}
-                  </h3>
-                  <button 
-                    onClick={() => deleteItem(item._id)}
-                    className="absolute top-4 right-4 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity p-1"
-                    title="Видалити"
-                  >
-                    ✕
-                  </button>
-                </div>
+              {/* Блок з картинкою */}
+              <div className="h-40 w-full bg-slate-700 relative">
+                {item.imageUrl ? (
+                  <img src={item.imageUrl} alt={item.title} className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity duration-300" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-4xl bg-slate-800">🎮</div>
+                )}
+                {/* Кнопка видалення поверх картинки */}
+                <button 
+                  onClick={() => deleteItem(item._id)}
+                  className="absolute top-2 right-2 bg-red-500 hover:bg-red-600 text-white w-8 h-8 rounded-full opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center shadow-lg"
+                  title="Видалити"
+                >
+                  ✕
+                </button>
               </div>
 
-              <div className="flex justify-between items-end">
-                <div className="flex flex-col gap-1.5 w-full">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-1">Статус</span>
-                  <div className="flex gap-2">
-                    {['backlog', 'playing', 'completed'].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => updateStatus(item._id, s)}
-                        className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                          item.status === s
-                            ? (s === 'backlog' ? 'bg-slate-600 text-white' : s === 'playing' ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/50' : 'bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/50')
-                            : 'bg-slate-700/50 text-slate-500 hover:bg-slate-600 hover:text-slate-300'
-                        }`}
-                      >
-                        {s === 'backlog' ? 'БЕКЛОГ' : s === 'playing' ? 'ГРАЮ' : 'ГОТОВО'}
-                      </button>
-                    ))}
-                  </div>
+              {/* Інформація під картинкою */}
+              <div className="p-4 flex flex-col justify-between flex-1">
+                <h3 className="text-lg font-bold text-white leading-tight line-clamp-1 mb-3" title={item.title}>
+                  {item.title}
+                </h3>
+                
+                <div className="flex gap-1.5">
+                  {['backlog', 'playing', 'completed'].map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => updateStatus(item._id, s)}
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold tracking-wider transition-all ${
+                        item.status === s
+                          ? (s === 'backlog' ? 'bg-slate-600 text-white' : s === 'playing' ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/50' : 'bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/50')
+                          : 'bg-slate-700/50 text-slate-500 hover:bg-slate-600 hover:text-slate-300'
+                      }`}
+                    >
+                      {s === 'backlog' ? 'БЕКЛОГ' : s === 'playing' ? 'ГРАЮ' : 'ГОТОВО'}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
