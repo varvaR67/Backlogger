@@ -24,6 +24,7 @@ export default function Auth({ setAuth }) {
       localStorage.setItem('token', token);
       localStorage.setItem('username', user);
 
+      toast.dismiss();
       toast.success(isLogin ? 'З поверненням!' : 'Акаунт створено!', { icon: '👋' });
       
       setAuth(token, user);
