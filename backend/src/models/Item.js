@@ -6,6 +6,11 @@ const itemSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  mediaType: {
+    type: String,
+    enum: ['game', 'movie', 'series', 'anime'],
+    default: 'game'
+  },
   imageUrl: {
     type: String,
     default: ''
@@ -36,6 +41,22 @@ const itemSchema = new mongoose.Schema({
   playtime: {
     type: Number,
     default: 0
+  },
+  runtimeMinutes: {
+    type: Number,
+    default: null
+  },
+  currentSeason: {
+    type: Number,
+    default: 1
+  },
+  currentEpisode: {
+    type: Number,
+    default: 0
+  },
+  totalEpisodes: {
+    type: Number,
+    default: null
   },
   comment: {
     type: String,
