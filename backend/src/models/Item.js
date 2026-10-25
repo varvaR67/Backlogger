@@ -24,7 +24,7 @@ const itemSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['wishlist', 'backlog', 'playing', 'completed'],
+    enum: ['wishlist', 'backlog', 'playing', 'paused', 'completed'],
     default: 'backlog'
   },
   personalRating: {
@@ -41,9 +41,9 @@ const itemSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  hasUaLocalization: {
-    type: Boolean,
-    default: false
+  likes: {
+    type: [String],
+    default: []
   },
   steamAppId: {
     type: Number,

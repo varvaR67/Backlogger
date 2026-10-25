@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Search, Plus, Loader2, Heart } from 'lucide-react';
 
-export default function LiveSearch({ onAddGame }) {
+export default function LiveSearch({ onAddGame, t }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -51,15 +51,15 @@ export default function LiveSearch({ onAddGame }) {
 
   return (
     <div ref={searchRef} className="relative max-w-2xl mx-auto mb-10 z-30">
-      <div className="relative flex items-center">
-        <Search className="w-5 h-5 text-gray-400 absolute left-4 pointer-events-none" />
+      <div className="relative flex items-center group">
+        <Search className="w-5 h-5 text-gray-400 group-focus-within:text-indigo-400 transition-colors absolute left-4 pointer-events-none" />
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => results.length > 0 && setIsOpen(true)}
-          placeholder="Знайти гру (наприклад, Cyberpunk 2077 або S.T.A.L.K.E.R. 2)..."
-          className="w-full bg-[#0b0b0f] border border-white/10 focus:border-indigo-500/60 rounded-2xl pl-12 pr-12 py-3.5 text-sm sm:text-base text-white placeholder-gray-500 focus:outline-none transition-all shadow-lg"
+          placeholder={t ? t('search_placeholder') : 'Знайти гру...'}
+          className="w-full bg-[#0b0b10]/90 border border-white/[0.08] hover:border-white/15 focus:border-indigo-500/60 rounded-2xl pl-12 pr-12 py-3.5 text-sm sm:text-base text-white placeholder-gray-500 focus:outline-none transition-all shadow-lg"
         />
         {isLoading && (
           <Loader2 className="w-5 h-5 text-indigo-400 animate-spin absolute right-4" />
@@ -96,18 +96,16 @@ export default function LiveSearch({ onAddGame }) {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {/* Овальна кнопка додавання у Вішліст */}
                 <button
                   type="button"
                   onClick={() => handleSelect(game, 'wishlist')}
                   className="px-3 py-2 rounded-full bg-pink-500/15 hover:bg-pink-500 text-pink-300 hover:text-white border border-pink-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
-                  title="Додати у Вішліст (хочу купити)"
+                  title="Додати у Вішліст"
                 >
                   <Heart className="w-3.5 h-3.5" />
-                  <span>У вішліст</span>
+                  <span>{t ? t('to_wishlist') : 'У вішліст'}</span>
                 </button>
 
-                {/* Кнопка додавання в основну бібліотеку (Беклог) */}
                 <button
                   type="button"
                   onClick={() => handleSelect(game, 'backlog')}
