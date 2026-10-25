@@ -1,108 +1,126 @@
-import { useState, useEffect } from 'react';
-import { Search, Loader2, Plus, Star } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { Search, Plus, Loader2, Heart } from 'lucide-react';
 
 export default function LiveSearch({ onAddGame }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
+  const searchRef = useRef(null);
 
   useEffect(() => {
-    if (query.trim().length < 2) {
-      setResults([]);
-      setIsOpen(false);
-      return;
-    }
+    const handleClickOutside = (e) => {
+      if (searchRef.current && !searchRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-    const delayDebounceFn = setTimeout(async () => {
-      setIsSearching(true);
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (query.trim().length < 2) {
+        setResults([]);
+        setIsOpen(false);
+        return;
+      }
+
+      setIsLoading(true);
       try {
-        const res = await axios.get(`http://localhost:5000/api/items/search?q=${query}`);
+        const res = await axios.get(`http://localhost:5000/api/items/search?q=${encodeURIComponent(query)}`);
         setResults(res.data);
         setIsOpen(true);
       } catch (error) {
-        console.error('Помилка пошуку:', error);
+        console.error("Помилка пошуку:", error);
       } finally {
-        setIsSearching(false);
+        setIsLoading(false);
       }
-    }, 400); 
+    }, 350);
 
-    return () => clearTimeout(delayDebounceFn);
+    return () => clearTimeout(timer);
   }, [query]);
 
-  const handleSelect = (game) => {
-    onAddGame(game);
+  const handleSelect = (game, targetStatus) => {
+    onAddGame(game, targetStatus);
     setQuery('');
-    setIsOpen(false);
     setResults([]);
+    setIsOpen(false);
   };
 
   return (
-    <div className="relative w-full max-w-2xl mx-auto z-50 mb-12">
-      <div className="relative group">
-        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-          {isSearching ? (
-            <Loader2 className="h-5 w-5 text-gray-400 animate-spin" />
-          ) : (
-            <Search className="h-5 w-5 text-gray-400 group-focus-within:text-indigo-400 transition-colors" />
-          )}
-        </div>
+    <div ref={searchRef} className="relative max-w-2xl mx-auto mb-10 z-30">
+      <div className="relative flex items-center">
+        <Search className="w-5 h-5 text-gray-400 absolute left-4 pointer-events-none" />
         <input
           type="text"
-          className="w-full bg-white/5 border border-white/10 text-white placeholder-gray-400 rounded-2xl pl-12 pr-4 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:bg-white/10 transition-all backdrop-blur-md shadow-lg text-lg"
-          placeholder="Знайти гру (наприклад, Cyberpunk 2077)..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => results.length > 0 && setIsOpen(true)}
+          placeholder="Знайти гру (наприклад, Cyberpunk 2077 або S.T.A.L.K.E.R. 2)..."
+          className="w-full bg-[#0b0b0f] border border-white/10 focus:border-indigo-500/60 rounded-2xl pl-12 pr-12 py-3.5 text-sm sm:text-base text-white placeholder-gray-500 focus:outline-none transition-all shadow-lg"
         />
+        {isLoading && (
+          <Loader2 className="w-5 h-5 text-indigo-400 animate-spin absolute right-4" />
+        )}
       </div>
 
-      <AnimatePresence>
-        {isOpen && results.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="absolute w-full mt-3 bg-[#1c1c1e]/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden"
-          >
-            {results.map((game) => (
-              <div
-                key={game.rawgId}
-                className="flex items-center gap-4 p-4 hover:bg-white/5 transition-colors border-b border-white/5 last:border-0"
-              >
+      {isOpen && results.length > 0 && (
+        <div className="absolute left-0 right-0 mt-2 bg-[#111116] border border-white/15 rounded-2xl shadow-2xl overflow-hidden z-50 divide-y divide-white/[0.06]">
+          {results.map((game) => (
+            <div
+              key={game.rawgId}
+              className="flex items-center justify-between gap-3 p-3 hover:bg-white/[0.04] transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
                 <img
-                  src={game.imageUrl || 'https://via.placeholder.com/80x100?text=Немає+фото'}
+                  src={game.imageUrl || 'https://via.placeholder.com/60x80/1a1a1a/ffffff?text=Game'}
                   alt={game.title}
-                  className="w-12 h-16 object-cover rounded-md shadow-sm bg-black"
+                  className="w-11 h-14 object-cover rounded-xl border border-white/10 shrink-0 bg-black"
                 />
-                <div className="flex-1">
-                  <h4 className="text-white font-medium text-lg">{game.title}</h4>
-                  <div className="flex items-center gap-3 text-sm text-gray-400 mt-1">
+                <div className="min-w-0">
+                  <h4 className="text-sm font-bold text-white truncate">{game.title}</h4>
+                  <div className="flex items-center gap-2 text-xs text-gray-400 mt-0.5">
                     {game.releaseYear && <span>{game.releaseYear}</span>}
                     {game.metacritic && (
-                      <span className="flex items-center gap-1 text-green-400 bg-green-400/10 px-2 py-0.5 rounded-md">
-                        <Star className="w-3 h-3 fill-current" />
+                      <span className="text-emerald-400 font-semibold border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.2 rounded text-[10px]">
                         {game.metacritic}
                       </span>
                     )}
-                    <span className="truncate max-w-[200px]">{game.genres.join(', ')}</span>
+                    {game.genres?.length > 0 && (
+                      <span className="truncate hidden sm:inline">• {game.genres.slice(0, 2).join(', ')}</span>
+                    )}
                   </div>
                 </div>
-                {/* Кнопка додавання тепер має свій клік і анімацію */}
-                <button 
-                  onClick={() => handleSelect(game)}
-                  className="text-indigo-400 hover:text-white hover:bg-indigo-500 p-2 rounded-full transition-all active:scale-90"
-                  title="Додати до беклогу"
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Овальна кнопка додавання у Вішліст */}
+                <button
+                  type="button"
+                  onClick={() => handleSelect(game, 'wishlist')}
+                  className="px-3 py-2 rounded-full bg-pink-500/15 hover:bg-pink-500 text-pink-300 hover:text-white border border-pink-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
+                  title="Додати у Вішліст (хочу купити)"
                 >
-                  <Plus className="w-6 h-6" />
+                  <Heart className="w-3.5 h-3.5" />
+                  <span>У вішліст</span>
+                </button>
+
+                {/* Кнопка додавання в основну бібліотеку (Беклог) */}
+                <button
+                  type="button"
+                  onClick={() => handleSelect(game, 'backlog')}
+                  className="p-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500 text-indigo-300 hover:text-white border border-indigo-500/30 transition-all active:scale-95"
+                  title="Додати у бібліотеку (Беклог)"
+                >
+                  <Plus className="w-4 h-4" />
                 </button>
               </div>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

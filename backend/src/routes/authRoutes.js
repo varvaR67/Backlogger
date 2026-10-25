@@ -9,7 +9,6 @@ router.post('/register', async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // Шукаємо користувача суворо, але ігноруючи великі/малі літери
     const existingUser = await User.findOne({ 
       username: { $regex: new RegExp(`^${username}$`, 'i') } 
     });
@@ -36,30 +35,73 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Логін існуючого користувача
+// Вхід існуючого користувача
 router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
 
-    // 1. Шукаємо юзера в базі
-    const user = await User.findOne({ username });
+    const user = await User.findOne({ 
+      username: { $regex: new RegExp(`^${username}$`, 'i') } 
+    });
     if (!user) {
       return res.status(400).json({ message: 'Неправильне ім\'я або пароль' });
     }
 
-    // 2. Порівнюємо введений пароль із зашифрованим
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Неправильне ім\'я або пароль' });
     }
 
-    // 3. Якщо все ок — видаємо токен
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
     res.json({ token, username: user.username });
   } catch (error) {
-    console.error("Помилка логіну:", error);
-    res.status(500).json({ message: 'Помилка сервера' });
+    console.error("Помилка входу:", error);
+    res.status(500).json({ message: 'Внутрішня помилка сервера при вході' });
+  }
+});
+
+// Авторизація або реєстрація через Google
+router.post('/google', async (req, res) => {
+  try {
+    const { email, name, avatarUrl } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: 'Не вказано Google email' });
+    }
+
+    const cleanName = (name || email.split('@')[0]).trim().slice(0, 24);
+
+    // Шукаємо за Google поштою або за нікнеймом
+    let user = await User.findOne({
+      $or: [
+        { googleEmail: email.toLowerCase() },
+        { username: { $regex: new RegExp(`^${cleanName}$`, 'i') } }
+      ]
+    });
+
+    if (!user) {
+      const randomSecret = Math.random().toString(36).slice(-10) + Date.now();
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(randomSecret, salt);
+
+      user = new User({
+        username: cleanName.length >= 3 ? cleanName : `${cleanName}_ua`,
+        password: hashedPassword,
+        googleEmail: email.toLowerCase(),
+        avatar: avatarUrl || 'rocket',
+        customTitle: 'Google Геймер'
+      });
+      await user.save();
+    } else if (!user.googleEmail) {
+      user.googleEmail = email.toLowerCase();
+      await user.save();
+    }
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, username: user.username });
+  } catch (error) {
+    console.error("Помилка Google входу:", error);
+    res.status(500).json({ message: 'Помилка авторизації через Google' });
   }
 });
 

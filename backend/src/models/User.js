@@ -13,6 +13,10 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  googleEmail: {
+    type: String,
+    default: ''
+  },
   avatar: {
     type: String,
     default: 'cyber'
@@ -32,6 +36,10 @@ const userSchema = new mongoose.Schema({
   steamSynced: {
     type: Boolean,
     default: false
+  },
+  steamId: {
+    type: String,
+    default: ''
   }
 }, { timestamps: true });
 
