@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, createElement } from 'react';
 
 export const resources = {
   uk: {
@@ -95,8 +95,6 @@ export const resources = {
     open_steam_store: 'Магазин Steam',
     open_steam_client: 'Відкрити в клієнті Steam',
     footer_created: 'З гордістю створено в Україні',
-    
-    // Нові ключі для вступної сторінки (Лендінгу)
     landing_features: 'Можливості',
     landing_cinema: 'Кіновсесвіт',
     landing_community: 'Спільнота',
@@ -133,7 +131,6 @@ export const resources = {
     auth_login_sub: 'Введи свій логін та пароль',
     auth_reg_sub: 'Зареєструйся, щоб вести свою колекцію',
     auth_name: 'Твій нікнейм',
-    auth_name_ph: 'Наприклад: alex',
     auth_pass: 'Пароль',
     auth_btn_login: 'Увійти',
     auth_btn_reg: 'Зареєструватися',
@@ -235,8 +232,6 @@ export const resources = {
     open_steam_store: 'Steam Store',
     open_steam_client: 'Open in Steam App',
     footer_created: 'Proudly created in Ukraine',
-    
-    // Landing keys EN
     landing_features: 'Features',
     landing_cinema: 'Cinema',
     landing_community: 'Community',
@@ -273,7 +268,6 @@ export const resources = {
     auth_login_sub: 'Enter your username and password',
     auth_reg_sub: 'Sign up to manage your collection',
     auth_name: 'Your Username',
-    auth_name_ph: 'Example: alex',
     auth_pass: 'Password',
     auth_btn_login: 'Log In',
     auth_btn_reg: 'Sign Up',
@@ -375,8 +369,6 @@ export const resources = {
     open_steam_store: 'Магазин Steam',
     open_steam_client: 'Открыть в клиенте Steam',
     footer_created: 'С гордостью создано в Украине',
-    
-    // Landing keys RU
     landing_features: 'Возможности',
     landing_cinema: 'Киновселенная',
     landing_community: 'Сообщество',
@@ -413,7 +405,6 @@ export const resources = {
     auth_login_sub: 'Введи свой логин и пароль',
     auth_reg_sub: 'Зарегистрируйся, чтобы вести свою коллекцию',
     auth_name: 'Твой никнейм',
-    auth_name_ph: 'Например: alex',
     auth_pass: 'Пароль',
     auth_btn_login: 'Войти',
     auth_btn_reg: 'Зарегистрироваться',
@@ -423,21 +414,51 @@ export const resources = {
   }
 };
 
-export function useTranslation() {
+const LanguageContext = createContext(null);
+
+export function LanguageProvider({ children }) {
   const [lang, setLang] = useState(() => localStorage.getItem('app_lang') || 'uk');
 
   const changeLanguage = (newLang) => {
     setLang(newLang);
     localStorage.setItem('app_lang', newLang);
+    window.dispatchEvent(new CustomEvent('app_lang_change', { detail: newLang }));
   };
 
   useEffect(() => {
-    localStorage.setItem('app_lang', lang);
+    const syncLang = (e) => {
+      if (e.detail && e.detail !== lang) setLang(e.detail);
+    };
+    window.addEventListener('app_lang_change', syncLang);
+    return () => window.removeEventListener('app_lang_change', syncLang);
   }, [lang]);
 
-  const t = (key) => {
-    return resources[lang]?.[key] || resources['uk']?.[key] || key;
+  const t = (key) => resources[lang]?.[key] || resources['uk']?.[key] || key;
+
+  return createElement(LanguageContext.Provider, { value: { t, lang, changeLanguage } }, children);
+}
+
+export function useTranslation() {
+  const ctx = useContext(LanguageContext);
+  const [fallbackLang, setFallbackLang] = useState(() => localStorage.getItem('app_lang') || 'uk');
+
+  useEffect(() => {
+    if (ctx) return;
+    const syncLang = (e) => {
+      if (e.detail) setFallbackLang(e.detail);
+    };
+    window.addEventListener('app_lang_change', syncLang);
+    return () => window.removeEventListener('app_lang_change', syncLang);
+  }, [ctx]);
+
+  if (ctx) return ctx;
+
+  const changeLanguage = (newLang) => {
+    setFallbackLang(newLang);
+    localStorage.setItem('app_lang', newLang);
+    window.dispatchEvent(new CustomEvent('app_lang_change', { detail: newLang }));
   };
 
-  return { t, lang, changeLanguage };
+  const t = (key) => resources[fallbackLang]?.[key] || resources['uk']?.[key] || key;
+  return { t, lang: fallbackLang, changeLanguage };
 }
