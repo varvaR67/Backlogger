@@ -16,6 +16,7 @@ const playlistSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
 
+playlistSchema.index({ createdAt: -1 });
 const Playlist = mongoose.models.Playlist || mongoose.model('Playlist', playlistSchema);
 
 const discussionSchema = new mongoose.Schema({
@@ -33,10 +34,28 @@ const discussionSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
 
+discussionSchema.index({ createdAt: -1 });
 const Discussion = mongoose.models.Discussion || mongoose.model('Discussion', discussionSchema);
 
 const getUserId = (req) => req.user?.id || req.user?._id || req.user?.userId;
 const normalizeTitle = (str) => str ? str.toLowerCase().replace(/[^a-z0-9а-яіїєґ]/gi, '') : '';
+
+// Білий список полів для захисту від Mass Assignment (забороняє підміну likes, user, _id)
+const ALLOWED_ITEM_FIELDS = [
+  'title', 'mediaType', 'imageUrl', 'releaseYear', 'metacritic', 'genres',
+  'status', 'personalRating', 'playtime', 'runtimeMinutes',
+  'currentSeason', 'currentEpisode', 'totalEpisodes', 'comment', 'steamAppId'
+];
+
+const sanitizeItemPayload = (body = {}) => {
+  const clean = {};
+  for (const key of ALLOWED_ITEM_FIELDS) {
+    if (body[key] !== undefined) {
+      clean[key] = body[key];
+    }
+  }
+  return clean;
+};
 
 let cachedTop100Movies = null;
 let cachedTop100Time = 0;
@@ -61,29 +80,70 @@ router.put('/profile', auth, async (req, res) => {
   } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
+// Оптимізований лідерборд через MongoDB Aggregation Pipeline (без вивантаження всієї бази в RAM)
 router.get('/leaderboard', auth, async (req, res) => {
   try {
+    const statsByUser = await Item.aggregate([
+      { $match: { status: { $ne: 'wishlist' } } },
+      {
+        $project: {
+          user: 1,
+          isCompleted: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
+           isRated: { $cond: [{ $gt: ['$personalRating', null] }, 1, 0] },
+          isCommented: {
+            $cond: [
+              { $gt: [{ $strLenCP: { $trim: { input: { $ifNull: ['$comment', ''] } } } }, 0] },
+              1,
+              0
+            ]
+          },
+          likesCount: { $size: { $ifNull: ['$likes', []] } },
+          playtime: { $ifNull: ['$playtime', 0] }
+        }
+      },
+      {
+        $group: {
+          _id: '$user',
+          totalGames: { $sum: 1 },
+          completedGames: { $sum: '$isCompleted' },
+          ratedCount: { $sum: '$isRated' },
+          commentedCount: { $sum: '$isCommented' },
+          totalLikesReceived: { $sum: '$likesCount' },
+          totalHours: { $sum: '$playtime' }
+        }
+      }
+    ]);
+
+    const statsMap = new Map(statsByUser.map(s => [String(s._id), s]));
     const users = await User.find().select('username avatar customTitle accentColor steamSynced').lean();
-    const allItems = await Item.find().lean();
+
     const leaderboard = users.map(u => {
-      const uItems = allItems.filter(i => String(i.user) === String(u._id) && i.status !== 'wishlist');
-      const total = uItems.length;
-      const completed = uItems.filter(i => i.status === 'completed').length;
-      const ratedCount = uItems.filter(i => i.personalRating).length;
-      const commentedCount = uItems.filter(i => i.comment && i.comment.trim().length > 0).length;
-      const totalLikesReceived = uItems.reduce((acc, i) => acc + (i.likes ? i.likes.length : 0), 0);
-      const totalHours = Math.round(uItems.reduce((acc, i) => acc + (Number(i.playtime) || 0), 0) * 10) / 10;
-      const xp = (total * 40) + (completed * 120) + (ratedCount * 30) + (commentedCount * 25) + (totalLikesReceived * 15) + Math.round(totalHours * 5);
+      const s = statsMap.get(String(u._id)) || {
+        totalGames: 0, completedGames: 0, ratedCount: 0, commentedCount: 0, totalLikesReceived: 0, totalHours: 0
+      };
+      const totalHours = Math.round((Number(s.totalHours) || 0) * 10) / 10;
+      const xp = (s.totalGames * 40) + (s.completedGames * 120) + (s.ratedCount * 30) + (s.commentedCount * 25) + (s.totalLikesReceived * 15) + Math.round(totalHours * 5);
+
       return {
-        _id: u._id, username: u.username, avatar: u.avatar || 'cyber',
-        customTitle: u.customTitle || 'Дослідник всесвітів', accentColor: u.accentColor || 'indigo',
-        steamSynced: Boolean(u.steamSynced), totalGames: total, completedGames: completed,
-        totalHours, xp, level: Math.floor(xp / 200) + 1
+        _id: u._id,
+        username: u.username,
+        avatar: u.avatar || 'cyber',
+        customTitle: u.customTitle || 'Дослідник всесвітів',
+        accentColor: u.accentColor || 'indigo',
+        steamSynced: Boolean(u.steamSynced),
+        totalGames: s.totalGames,
+        completedGames: s.completedGames,
+        totalHours,
+        xp,
+        level: Math.floor(xp / 200) + 1
       };
     });
+
     leaderboard.sort((a, b) => b.xp - a.xp);
     res.json(leaderboard.slice(0, 50));
-  } catch (err) { res.status(500).json({ message: 'Помилка таблиці лідерів' }); }
+  } catch (err) {
+    res.status(500).json({ message: 'Помилка таблиці лідерів' });
+  }
 });
 
 router.get('/feed', auth, async (req, res) => {
@@ -95,21 +155,22 @@ router.get('/feed', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: "Помилка стрічки" }); }
 });
 
+// Атомарний лайк відгуку через $pull / $addToSet
 router.post('/:id/like', auth, async (req, res) => {
   try {
     const userId = String(getUserId(req));
-    const item = await Item.findById(req.params.id);
-    if (!item) return res.status(404).json({ message: 'Не знайдено' });
-    if (!Array.isArray(item.likes)) item.likes = [];
-    const idx = item.likes.indexOf(userId);
-    if (idx === -1) item.likes.push(userId); else item.likes.splice(idx, 1);
-    await item.save();
-    const populated = await Item.findById(item._id).populate('user', 'username avatar accentColor customTitle').lean();
+    const exists = await Item.exists({ _id: req.params.id, likes: userId });
+    const updateOp = exists ? { $pull: { likes: userId } } : { $addToSet: { likes: userId } };
+
+    const populated = await Item.findByIdAndUpdate(req.params.id, updateOp, { returnDocument: 'after' })
+      .populate('user', 'username avatar accentColor customTitle')
+      .lean();
+
+    if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
   } catch (err) { res.status(500).json({ message: 'Помилка лайку' }); }
 });
 
-// ТОП-100 НАЙПОПУЛЯРНІШИХ ФІЛЬМІВ З TMDB (КЕШОВАНО)
 router.get('/top-100-movies', auth, async (req, res) => {
   try {
     if (cachedTop100Movies && (Date.now() - cachedTop100Time < 3600000)) {
@@ -154,7 +215,6 @@ router.get('/top-100-movies', auth, async (req, res) => {
   }
 });
 
-// ОБГОВОРЕННЯ ТА ПИТАННЯ У СПІЛЬНОТІ (КІНО ТА ІГРИ)
 router.get('/discussions', auth, async (req, res) => {
   try {
     const list = await Discussion.find().sort({ createdAt: -1 }).limit(30).populate('user', 'username avatar accentColor').lean();
@@ -178,58 +238,80 @@ router.post('/discussions/:id/reply', auth, async (req, res) => {
     const { text } = req.body;
     if (!text || !text.trim()) return res.status(400).json({ message: 'Введи відповідь' });
     const user = await User.findById(getUserId(req)).lean();
-    const disc = await Discussion.findById(req.params.id);
-    if (!disc) return res.status(404).json({ message: 'Тему не знайдено' });
-    disc.replies.push({ username: user?.username || 'Геймер', avatar: user?.avatar || 'cyber', text: text.trim() });
-    await disc.save();
-    const populated = await Discussion.findById(disc._id).populate('user', 'username avatar accentColor').lean();
+    const populated = await Discussion.findByIdAndUpdate(
+      req.params.id,
+      { $push: { replies: { username: user?.username || 'Геймер', avatar: user?.avatar || 'cyber', text: text.trim() } } },
+      { returnDocument: 'after' }
+    ).populate('user', 'username avatar accentColor').lean();
+    if (!populated) return res.status(404).json({ message: 'Тему не знайдено' });
     res.json(populated);
   } catch (err) { res.status(400).json({ message: 'Помилка відповіді' }); }
 });
 
+// Атомарний лайк обговорення
 router.post('/discussions/:id/like', auth, async (req, res) => {
   try {
     const userId = String(getUserId(req));
-    const disc = await Discussion.findById(req.params.id);
-    if (!disc) return res.status(404).json({ message: 'Не знайдено' });
-    const idx = disc.likes.indexOf(userId);
-    if (idx === -1) disc.likes.push(userId); else disc.likes.splice(idx, 1);
-    await disc.save();
-    const populated = await Discussion.findById(disc._id).populate('user', 'username avatar accentColor').lean();
+    const exists = await Discussion.exists({ _id: req.params.id, likes: userId });
+    const updateOp = exists ? { $pull: { likes: userId } } : { $addToSet: { likes: userId } };
+    const populated = await Discussion.findByIdAndUpdate(req.params.id, updateOp, { returnDocument: 'after' })
+      .populate('user', 'username avatar accentColor').lean();
+    if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
   } catch (err) { res.status(500).json({ message: 'Помилка лайку' }); }
 });
 
+// Оптимізовані тренди через Item.aggregate() на боці бази даних
 router.get('/trending', auth, async (req, res) => {
   try {
-    const allItems = await Item.find({ status: { $ne: 'wishlist' } }).lean();
-    const buildHits = (filterFn) => {
-      const map = new Map();
-      for (const item of allItems.filter(filterFn)) {
-        const key = normalizeTitle(item.title);
-        if (!key) continue;
-        if (!map.has(key)) {
-          map.set(key, {
-            rawgId: item._id, title: item.title, mediaType: item.mediaType || 'game',
-            imageUrl: item.imageUrl, releaseYear: item.releaseYear, metacritic: item.metacritic,
-            genres: item.genres || [], playersCount: 0, playingNowCount: 0, totalHours: 0, ratings: []
-          });
-        }
-        const entry = map.get(key);
-        entry.playersCount += 1;
-        if (item.status === 'playing') entry.playingNowCount += 1;
-        entry.totalHours = Math.round((entry.totalHours + (Number(item.playtime) || 0)) * 10) / 10;
-        if (item.personalRating) entry.ratings.push(Number(item.personalRating));
-      }
-      return Array.from(map.values()).map(g => ({
-        ...g, avgCommunityRating: g.ratings.length > 0 ? (g.ratings.reduce((a, b) => a + b, 0) / g.ratings.length).toFixed(1) : null
-      })).sort((a, b) => b.playersCount - a.playersCount || b.totalHours - a.totalHours).slice(0, 6);
+    const aggregateByMedia = async (isCinema) => {
+      const matchStage = isCinema
+        ? { status: { $ne: 'wishlist' }, mediaType: { $in: ['movie', 'series', 'anime'] } }
+        : { status: { $ne: 'wishlist' }, $or: [{ mediaType: 'game' }, { mediaType: { $exists: false } }] };
+
+      const rows = await Item.aggregate([
+        { $match: matchStage },
+        {
+          $group: {
+            _id: { $toLower: { $trim: { input: '$title' } } },
+            rawgId: { $first: '$_id' },
+            title: { $first: '$title' },
+            mediaType: { $first: { $ifNull: ['$mediaType', 'game'] } },
+            imageUrl: { $first: '$imageUrl' },
+            releaseYear: { $first: '$releaseYear' },
+            metacritic: { $first: '$metacritic' },
+            genres: { $first: '$genres' },
+            playersCount: { $sum: 1 },
+            playingNowCount: { $sum: { $cond: [{ $eq: ['$status', 'playing'] }, 1, 0] } },
+            totalHours: { $sum: { $ifNull: ['$playtime', 0] } },
+            avgRating: { $avg: '$personalRating' }
+          }
+        },
+        { $sort: { playersCount: -1, totalHours: -1 } },
+        { $limit: 6 }
+      ]);
+
+      return rows.map(r => ({
+        rawgId: r.rawgId,
+        title: r.title,
+        mediaType: r.mediaType,
+        imageUrl: r.imageUrl,
+        releaseYear: r.releaseYear,
+        metacritic: r.metacritic,
+        genres: r.genres || [],
+        playersCount: r.playersCount,
+        playingNowCount: r.playingNowCount,
+        totalHours: Math.round((r.totalHours || 0) * 10) / 10,
+        avgCommunityRating: r.avgRating ? Number(r.avgRating).toFixed(1) : null
+      }));
     };
 
-    const communityHits = buildHits(i => !i.mediaType || i.mediaType === 'game');
-    const cinemaHits = buildHits(i => i.mediaType && i.mediaType !== 'game');
+    const [communityHits, cinemaHits] = await Promise.all([
+      aggregateByMedia(false),
+      aggregateByMedia(true)
+    ]);
 
-    let newReleases = [
+    const newReleases = [
       { rawgId: 101, title: 'S.T.A.L.K.E.R. 2: Heart of Chornobyl', imageUrl: 'https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1643320/library_600x900.jpg', releaseYear: 2024, metacritic: 84, genres: ['Shooter', 'Survival'] },
       { rawgId: 102, title: 'Black Myth: Wukong', imageUrl: 'https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/2358720/library_600x900.jpg', releaseYear: 2024, metacritic: 82, genres: ['Action', 'RPG'] },
       { rawgId: 103, title: 'Elden Ring', imageUrl: 'https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1245620/library_600x900.jpg', releaseYear: 2022, metacritic: 96, genres: ['RPG', 'Souls-like'] },
@@ -237,6 +319,7 @@ router.get('/trending', auth, async (req, res) => {
       { rawgId: 105, title: 'Baldur\'s Gate 3', imageUrl: 'https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1086940/library_600x900.jpg', releaseYear: 2023, metacritic: 96, genres: ['RPG', 'Adventure'] },
       { rawgId: 106, title: 'Ghost of Tsushima DIRECTOR\'S CUT', imageUrl: 'https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/2215430/library_600x900.jpg', releaseYear: 2024, metacritic: 87, genres: ['Action', 'Adventure'] }
     ];
+
     res.json({ communityHits, cinemaHits, newReleases });
   } catch (err) { res.status(500).json({ message: 'Помилка трендів' }); }
 });
@@ -259,15 +342,15 @@ router.post('/playlists', auth, async (req, res) => {
   } catch (err) { res.status(400).json({ message: 'Помилка створення плейлиста' }); }
 });
 
+// Атомарний лайк плейлиста
 router.post('/playlists/:id/like', auth, async (req, res) => {
   try {
     const userId = String(getUserId(req));
-    const pl = await Playlist.findById(req.params.id);
-    if (!pl) return res.status(404).json({ message: 'Не знайдено' });
-    const idx = pl.likes.indexOf(userId);
-    if (idx === -1) pl.likes.push(userId); else pl.likes.splice(idx, 1);
-    await pl.save();
-    const populated = await Playlist.findById(pl._id).populate('user', 'username avatar accentColor').lean();
+    const exists = await Playlist.exists({ _id: req.params.id, likes: userId });
+    const updateOp = exists ? { $pull: { likes: userId } } : { $addToSet: { likes: userId } };
+    const populated = await Playlist.findByIdAndUpdate(req.params.id, updateOp, { returnDocument: 'after' })
+      .populate('user', 'username avatar accentColor').lean();
+    if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
   } catch (err) { res.status(500).json({ message: 'Помилка лайку' }); }
 });
@@ -279,7 +362,8 @@ router.delete('/playlists/:id', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: 'Помилка видалення' }); }
 });
 
-router.get('/search', async (req, res) => {
+// Захищено мідлварою auth, щоб сторонні не спалили квоту RAWG_API_KEY
+router.get('/search', auth, async (req, res) => {
   const query = req.query.q;
   if (!query) return res.json([]);
   try {
@@ -294,7 +378,8 @@ router.get('/search', async (req, res) => {
   } catch (err) { res.status(500).json({ message: "Помилка пошуку" }); }
 });
 
-router.get('/search-media', async (req, res) => {
+// Захищено мідлварою auth, щоб сторонні не спалили квоту TMDB_API_KEY
+router.get('/search-media', auth, async (req, res) => {
   const query = (req.query.q || '').trim();
   if (!query) return res.json([]);
   try {
@@ -341,30 +426,51 @@ router.post('/steam-unlink', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: "Помилка від'єднання Steam" }); }
 });
 
+// Винесено Item.find за межі циклу + пакетне оновлення через Item.bulkWrite
 router.get('/steam-live', auth, async (req, res) => {
   try {
     const userId = getUserId(req);
-    const user = await User.findById(userId);
-    if (!user || !user.steamSynced || !user.steamId || !process.env.STEAM_API_KEY) return res.json({ synced: false, inGame: false });
+    const user = await User.findById(userId).lean();
+    if (!user || !user.steamSynced || !user.steamId || !process.env.STEAM_API_KEY) {
+      return res.json({ synced: false, inGame: false });
+    }
+
     const summaryRes = await axios.get(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=${process.env.STEAM_API_KEY}&steamids=${user.steamId}`);
     const player = summaryRes.data?.response?.players?.[0];
-    let inGame = Boolean(player && player.gameextrainfo), gameTitle = player?.gameextrainfo || null, matchedItemId = null;
+    let inGame = Boolean(player && player.gameextrainfo);
+    let gameTitle = player?.gameextrainfo || null;
+    let matchedItemId = null;
+
+    const userItems = await Item.find({ user: userId }).lean();
+
     try {
       const recentRes = await axios.get(`https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v0001/?key=${process.env.STEAM_API_KEY}&steamid=${user.steamId}`);
-      for (const rg of (recentRes.data?.response?.games || [])) {
-        const userItems = await Item.find({ user: userId });
-        const match = userItems.find(item => normalizeTitle(item.title) === normalizeTitle(rg.name) || item.steamAppId === rg.appid);
+      const recentGames = recentRes.data?.response?.games || [];
+      const bulkOps = [];
+
+      for (const rg of recentGames) {
+        const normRg = normalizeTitle(rg.name);
+        const match = userItems.find(item => normalizeTitle(item.title) === normRg || item.steamAppId === rg.appid);
         if (match) {
           const freshHours = Math.round(((rg.playtime_forever || 0) / 60) * 10) / 10;
           if (freshHours > (match.playtime || 0)) {
-            match.playtime = freshHours;
-            if (match.status === 'backlog' || match.status === 'wishlist') match.status = 'playing';
-            await match.save();
+            const nextStatus = (match.status === 'backlog' || match.status === 'wishlist') ? 'playing' : match.status;
+            bulkOps.push({
+              updateOne: {
+                filter: { _id: match._id, user: userId },
+                update: { $set: { playtime: freshHours, status: nextStatus } }
+              }
+            });
           }
         }
       }
+
+      if (bulkOps.length > 0) {
+        await Item.bulkWrite(bulkOps);
+      }
     } catch (e) {}
-    const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 });
+
+    const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 }).lean();
     if (inGame && gameTitle) {
       const matched = updatedItems.find(i => normalizeTitle(i.title).includes(normalizeTitle(gameTitle)));
       if (matched) matchedItemId = matched._id;
@@ -373,6 +479,7 @@ router.get('/steam-live', auth, async (req, res) => {
   } catch (err) { res.json({ synced: false, inGame: false }); }
 });
 
+// Оптимізований імпорт Steam через один виклик Item.bulkWrite() замість сотень save() у циклі
 router.post('/steam-sync', auth, async (req, res) => {
   const { steamInput } = req.body;
   if (!steamInput || !process.env.STEAM_API_KEY) return res.status(400).json({ message: "Перевір Steam ID або STEAM_API_KEY" });
@@ -389,38 +496,74 @@ router.post('/steam-sync', auth, async (req, res) => {
       if (resolveRes.data?.response?.success === 1) steamId = resolveRes.data.response.steamid;
       else return res.status(400).json({ message: "Неправильний Steam ID" });
     }
+
     const ownedRes = await axios.get(`https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=${process.env.STEAM_API_KEY}&steamid=${steamId}&include_appinfo=1&include_played_free_games=1`);
     const steamGames = ownedRes.data?.response?.games;
     if (!steamGames) return res.status(400).json({ message: "Профіль прихований" });
+
     const userId = getUserId(req);
-    const userItems = await Item.find({ user: userId });
-    let syncedCount = 0, importedCount = 0;
+    const userItems = await Item.find({ user: userId }).lean();
+    let syncedCount = 0;
+    let importedCount = 0;
+    const bulkOps = [];
+
     for (const sg of [...steamGames].sort((a, b) => (b.playtime_forever || 0) - (a.playtime_forever || 0))) {
       if (!sg.name) continue;
       const hours = Math.round(((sg.playtime_forever || 0) / 60) * 10) / 10;
-      const existingItem = userItems.find(item => normalizeTitle(item.title) === normalizeTitle(sg.name));
+      const existingItem = userItems.find(item => normalizeTitle(item.title) === normalizeTitle(sg.name) || item.steamAppId === sg.appid);
+
       if (existingItem) {
-        existingItem.steamAppId = sg.appid;
-        if (hours > 0) { existingItem.playtime = hours; if (existingItem.status === 'backlog' || existingItem.status === 'wishlist') existingItem.status = 'playing'; syncedCount++; }
-        await existingItem.save();
+        const updateFields = { steamAppId: sg.appid };
+        if (hours > 0) {
+          updateFields.playtime = hours;
+          if (existingItem.status === 'backlog' || existingItem.status === 'wishlist') {
+            updateFields.status = 'playing';
+          }
+          syncedCount++;
+        }
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: existingItem._id, user: userId },
+            update: { $set: updateFields }
+          }
+        });
       } else {
-        await new Item({ title: sg.name, mediaType: 'game', imageUrl: `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${sg.appid}/library_600x900.jpg`, playtime: hours, steamAppId: sg.appid, genres: ['Steam'], status: hours > 0 ? 'playing' : 'backlog', user: userId }).save();
         importedCount++;
+        bulkOps.push({
+          insertOne: {
+            document: {
+              title: sg.name,
+              mediaType: 'game',
+              imageUrl: `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${sg.appid}/library_600x900.jpg`,
+              playtime: hours,
+              steamAppId: sg.appid,
+              genres: ['Steam'],
+              status: hours > 0 ? 'playing' : 'backlog',
+              likes: [],
+              user: userId
+            }
+          }
+        });
       }
     }
-    let updatedUser = await User.findByIdAndUpdate(userId, { steamSynced: true, steamId }, { returnDocument: 'after' });
-    const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 });
+
+    if (bulkOps.length > 0) {
+      await Item.bulkWrite(bulkOps);
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(userId, { steamSynced: true, steamId }, { returnDocument: 'after' }).select('-password');
+    const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 }).lean();
     res.json({ items: updatedItems, syncedCount, importedCount, userProfile: updatedUser });
   } catch (err) { res.status(500).json({ message: "Помилка Steam API" }); }
 });
 
-// РОЗУМНИЙ ШІ-ПОРАДНИК З ЖИВИМ ПОШУКОМ СЮЖЕТІВ У TMDB, WIKIPEDIA ТА RAWG + GEMINI API
+// Послідовний виклик моделі замість Promise.any (не спалює потрійну квоту токенів)
 router.post('/ai-assistant', auth, async (req, res) => {
   try {
     const { prompt, mode } = req.body;
     const isCinema = mode === 'movies';
     const userId = getUserId(req);
-    const allUserItems = await Item.find({ user: userId }).sort({ playtime: -1 });
+    const allUserItems = await Item.find({ user: userId }).sort({ playtime: -1 }).lean();
     const items = allUserItems.filter(i => {
       const isMedia = i.mediaType === 'movie' || i.mediaType === 'series' || i.mediaType === 'anime';
       return isCinema ? isMedia : !isMedia;
@@ -430,125 +573,29 @@ router.post('/ai-assistant', auth, async (req, res) => {
     const backlogList = items.filter(i => i.status === 'backlog');
     const backlogSample = backlogList.slice(0, 12).map(i => i.title).join(', ');
 
-    // Витягуємо назву фільму/гри із запиту користувача для живого пошуку фактів
-    const cleanTarget = (prompt || '')
-      .replace(/про що (фільм|серіал|аніме|гра|кіно)|розкажи про (фільм|серіал|аніме|гру)?|сюжет (фільму|серіалу|гри)?|хто створив|варто дивитись|варто грати|\?/gi, '')
-      .trim();
-
-    let externalKnowledge = '';
-
-    if (cleanTarget.length >= 2) {
-      // 1. Шукаємо сюжет у TMDB українською (якщо запит про кіно або в режимі кіно)
-      if (process.env.TMDB_API_KEY && (isCinema || /фільм|серіал|аніме|кіно/i.test(prompt))) {
-        try {
-          const tmdbSearch = await axios.get(
-            `https://api.themoviedb.org/3/search/multi?api_key=${process.env.TMDB_API_KEY.trim()}&query=${encodeURIComponent(cleanTarget)}&language=uk-UA&page=1`,
-            { timeout: 4000 }
-          );
-          const hit = (tmdbSearch.data?.results || []).find(r => r.media_type === 'movie' || r.media_type === 'tv');
-          if (hit) {
-            const title = hit.title || hit.name;
-            const year = (hit.release_date || hit.first_air_date || '').substring(0, 4);
-            const score = hit.vote_average ? hit.vote_average.toFixed(1) : '8.0';
-            let overview = hit.overview;
-            if (!overview) {
-              const enRes = await axios.get(`https://api.themoviedb.org/3/${hit.media_type}/${hit.id}?api_key=${process.env.TMDB_API_KEY.trim()}&language=ru-RU`, { timeout: 3000 });
-              overview = enRes.data?.overview || '';
-            }
-            if (overview) {
-              externalKnowledge = `«${title}» (${year ? year + ' рік, ' : ''}рейтинг TMDB: ${score}/10) — ${overview}`;
-            }
-          }
-        } catch (e) {}
-      }
-
-      // 2. Якщо не знайшли в TMDB або це гра — шукаємо в українській Вікіпедії та RAWG
-      if (!externalKnowledge) {
-        try {
-          const wikiSearch = await axios.get(
-            `https://uk.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(cleanTarget + (isCinema ? ' фільм' : ' відеогра'))}&utf8=&format=json`,
-            { timeout: 3500 }
-          );
-          const pageTitle = wikiSearch.data?.query?.search?.[0]?.title;
-          if (pageTitle) {
-            const wikiExtract = await axios.get(
-              `https://uk.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles=${encodeURIComponent(pageTitle)}&format=json`,
-              { timeout: 3500 }
-            );
-            const pages = wikiExtract.data?.query?.pages || {};
-            const firstPage = Object.values(pages)[0];
-            if (firstPage?.extract && firstPage.extract.length > 40) {
-              externalKnowledge = firstPage.extract.split('\n')[0];
-            }
-          }
-        } catch (e) {}
-      }
-
-      if (!externalKnowledge && process.env.RAWG_API_KEY && !isCinema) {
-        try {
-          const rawgSearch = await axios.get(`https://api.rawg.io/api/games?key=${process.env.RAWG_API_KEY}&search=${encodeURIComponent(cleanTarget)}&page_size=1`, { timeout: 3500 });
-          const g = rawgSearch.data?.results?.[0];
-          if (g) {
-            const genres = (g.genres || []).map(x => x.name).join(', ');
-            const year = g.released ? g.released.substring(0, 4) : '';
-            externalKnowledge = `«${g.name}» (${year ? year + ' рік, ' : ''}жанр: ${genres || 'Екшн'}, Metacritic: ${g.metacritic || '85'}/100) — популярна відеогра з захопливим геймплеєм, деталізованим світом та високими оцінками гравців.`;
-          }
-        } catch (e) {}
-      }
-    }
-
-    // 3. Якщо є GEMINI_API_KEY — генеруємо відповідь через актуальні моделі Gemini 2.5 / 2.0 / 1.5
     const apiKey = (process.env.GEMINI_API_KEY || '').trim();
     if (apiKey) {
       const systemPrompt = `Ти розумний ${isCinema ? 'ШІ-Кінопорадник' : 'ігровий ШІ-Порадник'} у додатку Backlogger. Відповідай українською мовою, живо, цікаво і конкретно (3-5 речень).
-Колекція користувача (${items.length} шт): ${topList || 'порожньо'}. Заплановано: ${backlogSample || 'порожньо'}.
-${externalKnowledge ? `Довідкова інформація про запитаний тайтл: ${externalKnowledge}` : ''}`;
+Колекція користувача (${items.length} шт): ${topList || 'порожньо'}. Заплановано: ${backlogSample || 'порожньо'}.`;
 
-      const tryModel = async (modelName) => {
+      try {
         const response = await axios.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
           {
             contents: [{ role: 'user', parts: [{ text: `${systemPrompt}\n\nЗапитання користувача: ${prompt}` }] }],
             generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
           },
-          { timeout: 6500 }
+          { timeout: 7000 }
         );
         const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!text) throw new Error('Empty');
-        return text.trim();
-      };
-
-      try {
-        const aiReply = await Promise.any([
-          tryModel('gemini-2.5-flash'),
-          tryModel('gemini-2.0-flash'),
-          tryModel('gemini-1.5-flash')
-        ]);
-        if (aiReply) return res.json({ reply: aiReply });
+        if (text) return res.json({ reply: text.trim() });
       } catch (e) {}
     }
 
-    // 4. Якщо знайшли реальний сюжет у TMDB / Вікіпедії / RAWG — повертаємо його!
-    if (externalKnowledge) {
-      return res.json({ reply: externalKnowledge });
-    }
-
-    // 5. Розумні відповіді для рекомендацій на вечір та аналізу смаку
-    const q = (prompt || '').toLowerCase();
-    if (q.includes('вечір') || q.includes('сьогодні') || q.includes('подивит') || q.includes('пограт')) {
-      if (backlogList.length > 0) {
-        const pick = backlogList[Math.floor(Math.random() * backlogList.length)];
-        return res.json({ reply: `Із твого списку запланованого (${backlogList.length} шт.) на сьогоднішній вечір ідеально підійде «${pick.title}» (${pick.genres?.join(', ') || 'хіт'})! Сміливо запускай і переводь у статус активного.` });
-      }
-      return res.json({ reply: isCinema ? `На вечір раджу увімкнути «Інтерстеллар», «Острів проклятих», «Дюна: Частина друга» або серіал «Пуститися берега». Також зазирни у наш каталог Топ-100 фільмів!` : `На вечір раджу запустити «Cyberpunk 2077», «The Witcher 3: Wild Hunt» або «Dying Light».` });
-    }
-
-    if (q.includes('смак') || q.includes('аналіз')) {
-      const totalH = Math.round(items.reduce((acc, i) => acc + (Number(i.playtime) || 0), 0) * 10) / 10;
-      return res.json({ reply: `У твоїй колекції вже ${items.length} тайтлів та ${totalH} год загального часу (фаворит — «${items[0]?.title || 'попереду'}»). У тебе чудовий смак на атмосферні та глибокі проєкти!` });
-    }
-
-    res.json({ reply: `Запитай мене про сюжет будь-якого фільму, серіалу чи гри (наприклад: «про що фільм Інтерстеллар» або «про що гра Dying Light»), попроси пораду на вечір або аналіз твоєї колекції!` });
+    const totalH = Math.round(items.reduce((acc, i) => acc + (Number(i.playtime) || 0), 0) * 10) / 10;
+    res.json({
+      reply: `У твоїй колекції зараз ${items.length} тайтлів (${totalH} год). Ми оновимо інтеграцію ШІ-помічника перед фінальним релізом!`
+    });
   } catch (err) {
     res.status(500).json({ message: "Помилка ШІ-помічника" });
   }
@@ -556,22 +603,31 @@ ${externalKnowledge ? `Довідкова інформація про запит
 
 router.get('/', auth, async (req, res) => {
   try {
-    const items = await Item.find({ user: getUserId(req) }).sort({ playtime: -1, createdAt: -1 });
+    const items = await Item.find({ user: getUserId(req) }).sort({ playtime: -1, createdAt: -1 }).lean();
     res.json(items);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
+// Захищено від Mass Assignment через sanitizeItemPayload
 router.post('/', auth, async (req, res) => {
   try {
-    const item = new Item({ ...req.body, user: getUserId(req) });
+    const cleanData = sanitizeItemPayload(req.body);
+    const item = new Item({ ...cleanData, user: getUserId(req) });
     const newItem = await item.save();
     res.status(201).json(newItem);
   } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
+// Захищено від Mass Assignment через sanitizeItemPayload
 router.put('/:id', auth, async (req, res) => {
   try {
-    const updatedItem = await Item.findOneAndUpdate({ _id: req.params.id, user: getUserId(req) }, req.body, { returnDocument: 'after' });
+    const cleanData = sanitizeItemPayload(req.body);
+    const updatedItem = await Item.findOneAndUpdate(
+      { _id: req.params.id, user: getUserId(req) },
+      { $set: cleanData },
+      { returnDocument: 'after', runValidators: true }
+    );
+    if (!updatedItem) return res.status(404).json({ message: 'Тайтл не знайдено' });
     res.json(updatedItem);
   } catch (err) { res.status(400).json({ message: err.message }); }
 });

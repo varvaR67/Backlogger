@@ -998,14 +998,35 @@ export default function Home({ username, onLogout }) {
               <span>{profile.steamSynced ? t('nav_steam') : t('nav_steam_sync')}</span>
             </button>
 
-            <div className={`flex items-center gap-3 bg-[#0b0b12]/90 p-1.5 pl-2.5 pr-4 rounded-full border ${activeAccent.ring} transition-all hover:border-white/30`}>
-              <button onClick={() => openProfileWithTab()} className="flex items-center gap-2 text-left">
-                {renderAvatar("w-7 h-7", "w-3.5 h-3.5")}
-                <span className="text-sm font-bold text-white">{username || 'Геймер'}</span>
-                <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-md ${activeAccent.badge}`}>LVL {stats.level}</span>
-              </button>
-              <div className="w-px h-4 bg-white/10" />
-              <button onClick={onLogout} className="text-xs text-gray-400 hover:text-red-400" title={t('nav_logout')}><LogOut className="w-3.5 h-3.5" /></button>
+<div className="flex flex-col items-end gap-1.5">
+              <div className={`flex items-center gap-3 bg-[#0b0b12]/90 p-1.5 pl-2.5 pr-4 rounded-full border ${activeAccent.ring} transition-all hover:border-white/30`}>
+                <button onClick={() => openProfileWithTab()} className="flex items-center gap-2 text-left">
+                  {renderAvatar("w-7 h-7", "w-3.5 h-3.5")}
+                  <span className="text-sm font-bold text-white">{username || 'Геймер'}</span>
+                  <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-md ${activeAccent.badge}`}>LVL {stats.level}</span>
+                </button>
+                <div className="w-px h-4 bg-white/10" />
+                <button onClick={onLogout} className="text-xs text-gray-400 hover:text-red-400" title={t('nav_logout')}><LogOut className="w-3.5 h-3.5" /></button>
+              </div>
+              
+              {/* Перемикач мов ПІД плашкою профілю */}
+              <div className="flex items-center bg-[#0b0b12]/90 p-0.5 px-1 rounded-full border border-white/10 shadow-sm mr-1">
+                {[
+                  { code: 'uk', label: 'UA' },
+                  { code: 'en', label: 'EN' },
+                  { code: 'ru', label: 'RU' }
+                ].map((l) => (
+                  <button
+                    key={l.code}
+                    onClick={() => changeLanguage(l.code)}
+                    className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold transition-all ${
+                      lang === l.code ? 'bg-indigo-500 text-white' : 'text-gray-500 hover:text-white'
+                    }`}
+                  >
+                    {l.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -1658,18 +1679,16 @@ export default function Home({ username, onLogout }) {
             </div>
             
             <div className="flex items-center gap-4 flex-wrap justify-center">
-              {/* Кнопка "Підтримати проєкт" з автокопіюванням картки */}
-              <button 
-                onClick={() => {
-                  navigator.clipboard.writeText('4874070010763785');
-                  toast.success('Номер картки Монобанк скопійовано (4874070010763785)', { icon: '🐈‍⬛' });
-                }}
+              <a
+                href={import.meta.env.VITE_MONO_JAR_URL || 'https://send.monobank.ua/jar/6DBycstjdj'}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="group flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.03] hover:bg-pink-500/10 border border-white/10 hover:border-pink-500/30 text-gray-400 hover:text-pink-300 transition-all active:scale-95"
-                title="Скопіювати номер картки Монобанк"
+                title="Відкрити Банку Монобанк для підтримки проєкту"
               >
                 <Heart className="w-3.5 h-3.5 group-hover:fill-pink-400 transition-colors" />
                 <span className="font-bold">Підтримати проєкт</span>
-              </button>
+              </a>
               
               <div className="hidden md:block w-1 h-1 rounded-full bg-white/20" />
               

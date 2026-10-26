@@ -77,4 +77,10 @@ const itemSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
+// Індекси для швидкої вибірки, сортування та агрегацій
+itemSchema.index({ user: 1, playtime: -1, createdAt: -1 });
+itemSchema.index({ updatedAt: -1 });
+itemSchema.index({ status: 1, mediaType: 1 });
+itemSchema.index({ user: 1, steamAppId: 1 });
+
 module.exports = mongoose.model('Item', itemSchema);
