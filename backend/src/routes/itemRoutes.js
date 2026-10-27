@@ -40,7 +40,6 @@ const Discussion = mongoose.models.Discussion || mongoose.model('Discussion', di
 const getUserId = (req) => req.user?.id || req.user?._id || req.user?.userId;
 const normalizeTitle = (str) => str ? str.toLowerCase().replace(/[^a-z0-9а-яіїєґ]/gi, '') : '';
 
-// Білий список полів для захисту від Mass Assignment
 const ALLOWED_ITEM_FIELDS = [
   'title', 'mediaType', 'imageUrl', 'releaseYear', 'metacritic', 'genres',
   'status', 'personalRating', 'playtime', 'runtimeMinutes',
@@ -548,7 +547,6 @@ router.post('/steam-sync', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: "Помилка Steam API" }); }
 });
 
-// Допоміжна функція для Function Calling: шукає свіжу інформацію про гру чи фільм у RAWG / TMDB
 async function fetchExternalCatalogInfo(query, category = 'game') {
   const cleanQuery = (query || '').trim();
   if (!cleanQuery) return 'Назву для пошуку не вказано.';
@@ -602,7 +600,6 @@ router.post('/ai-assistant', auth, async (req, res) => {
 
     const allUserItems = await Item.find({ user: userId }).sort({ playtime: -1 }).lean();
     
-    // Сувора фільтрація: розділяємо ігри та кіно, навіть якщо є старі тайтли без mediaType
     const items = allUserItems.filter(i => {
       const type = i.mediaType || 'game';
       const isMedia = type === 'movie' || type === 'series' || type === 'anime';
@@ -623,12 +620,12 @@ router.post('/ai-assistant', auth, async (req, res) => {
     const mostPlayed = items
       .filter(i => i.status !== 'wishlist')
       .slice(0, 15)
-      .map(i => `«${i.title}» (${i.playtime || 0} год, статус: ${i.status}, оцінка: ${i.personalRating ? `${i.personalRating}/10` : 'без оцінки'})`);
+      .map(i => `«${i.title}» (${i.playtime || 0} год, статус: ${i.status})`);
 
     const backlogItems = items
       .filter(i => i.status === 'backlog')
       .slice(0, 20)
-      .map(i => `«${i.title}» (${i.releaseYear || '—'}, жанри: ${(i.genres || []).join('/') || '—'})`);
+      .map(i => `«${i.title}» (${i.releaseYear || '—'})`);
 
     const genreCounts = {};
     items.forEach(i => {
@@ -641,155 +638,158 @@ router.post('/ai-assistant', auth, async (req, res) => {
     const totalHours = Math.round(items.reduce((acc, i) => acc + (Number(i.playtime) || 0), 0) * 10) / 10;
 
     const systemInstructionText = isCinema
-      ? `Ти — харизматичний, дотепний і проникливий кінокритик на платформі Backlogger. Спілкуйся українською мовою живо, по-дружньому, з легким гумором і без жодної води. Завжди виділяй назви фільмів чи серіалів жирним шрифтом (**Назва**).
-Ось дані про колекцію (всього ${items.length} тайтлів, ${totalHours} год):
+      ? `Ти — харизматичний і дотепний кінокритик. Спілкуйся українською мовою живо, по-дружньому, з легким гумором. Завжди виділяй назви фільмів чи серіалів жирним шрифтом (**Назва**).
+ВАЖЛИВЕ ПРАВИЛО: Ти консультуєш ТІЛЬКИ щодо кіно, серіалів та аніме. Якщо користувач питає про відеоігри, ти ПОВИНЕН відмовитися і сказати: "Я розбираюся тільки в кіно! Для ігор перейди у вкладку 'ШІ-Порадник Ігор'."
+Ось дані про колекцію користувача:
 - Улюблені жанри: ${topGenres.join(', ') || 'ще формуються'}.
-- Шедеври (оцінка 8-10): ${favorites.join('; ') || 'немає'}.
+- Шедеври: ${favorites.join('; ') || 'немає'}.
 - Не сподобалося: ${disliked.join('; ') || 'немає'}.
 - Найбільше годин: ${mostPlayed.join('; ') || 'порожньо'}.
 - Беклог: ${backlogItems.join('; ') || 'порожньо'}.
-Якщо користувач питає про конкретний фільм чи серіал, обов'язково виклич функцію searchCatalogInfo.`
-      : `Ти — досвідчений геймер, кіберспортсмен та ігровий оглядач із гострим почуттям гумору на платформі Backlogger. Спілкуйся українською мовою як свій у дошку друг: конкретно, живо, без нудних шаблонів. Завжди виділяй назви ігор жирним шрифтом (**Назва**).
-Ось статистика гравця (всього ${items.length} ігор, ${totalHours} год):
+Якщо користувач питає про конкретний фільм чи серіал, обов'язково виклич інструмент searchCatalogInfo.`
+      : `Ти — досвідчений геймер та ігровий оглядач. Спілкуйся українською мовою як свій у дошку друг: конкретно і живо. Завжди виділяй назви ігор жирним шрифтом (**Назва**).
+ВАЖЛИВЕ ПРАВИЛО: Ти консультуєш ТІЛЬКИ щодо відеоігор. Якщо користувач питає про фільми, серіали чи аніме, ти ПОВИНЕН відмовитися і сказати: "Я спеціалізуюся тільки на іграх! Щодо фільмів переходь у вкладку 'ШІ-Кінопорадник'."
+Ось статистика гравця:
 - Улюблені жанри: ${topGenres.join(', ') || 'ще формуються'}.
-- Шедеври (оцінка 8-10): ${favorites.join('; ') || 'немає'}.
+- Шедеври: ${favorites.join('; ') || 'немає'}.
 - Розчарування: ${disliked.join('; ') || 'немає'}.
 - Найбільше годин: ${mostPlayed.join('; ') || 'порожньо'}.
 - Беклог: ${backlogItems.join('; ') || 'порожньо'}.
-Якщо питають, що пограти сьогодні — обери 1-2 круті проєкти з Беклогу і поясни вибір. Якщо питають про сюжет гри — виклич функцію searchCatalogInfo.`;
+Якщо питають про сюжет гри — виклич інструмент searchCatalogInfo.`;
 
-    const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+    const apiKey = (process.env.GROQ_API_KEY || '').trim();
     let apiErrorMessage = '';
     let successReply = null;
 
     if (apiKey) {
-      const formattedContents = [];
+      const messagesArray = [{ role: 'system', content: systemInstructionText }];
+      
       const recentHistory = Array.isArray(history) ? history.slice(-10) : [];
-
       for (const msg of recentHistory) {
         if (!msg || !msg.text) continue;
-        const role = msg.role === 'user' ? 'user' : 'model';
-        if (formattedContents.length === 0 && role === 'model') continue;
-        if (formattedContents.length > 0 && formattedContents[formattedContents.length - 1].role === role) {
-          formattedContents[formattedContents.length - 1].parts[0].text += `\n${msg.text}`;
-        } else {
-          formattedContents.push({ role, parts: [{ text: String(msg.text) }] });
-        }
+        messagesArray.push({
+          role: msg.role === 'ai' ? 'assistant' : 'user',
+          content: String(msg.text)
+        });
       }
 
-      if (formattedContents.length === 0 || formattedContents[formattedContents.length - 1].role !== 'user') {
-        formattedContents.push({ role: 'user', parts: [{ text: String(prompt) }] });
+      if (messagesArray.length === 1 || messagesArray[messagesArray.length - 1].role !== 'user') {
+        messagesArray.push({ role: 'user', content: String(prompt) });
       }
 
       const toolsDeclaration = [{
-        functionDeclarations: [{
-          name: 'searchCatalogInfo',
-          description: 'Шукає інформацію про сюжет та рейтинг гри, фільму, серіалу чи аніме в базах RAWG та TMDB.',
+        type: "function",
+        function: {
+          name: "searchCatalogInfo",
+          description: "Шукає інформацію про сюжет та рейтинг гри, фільму, серіалу чи аніме в базах RAWG та TMDB.",
           parameters: {
-            type: 'OBJECT',
+            type: "object",
             properties: {
-              query: { type: 'STRING', description: 'Назва для пошуку' },
-              category: { type: 'STRING', enum: ['game', 'movie'], description: 'Категорія' }
+              query: { type: "string", description: "Назва для пошуку" },
+              category: { type: "string", enum: ["game", "movie"], description: "Категорія: game або movie" }
             },
-            required: ['query', 'category']
+            required: ["query", "category"]
           }
-        }]
+        }
       }];
 
-// Використовуємо стабільну версію API v1 та актуальну модель gemini-2.5-flash
-      const modelName = 'gemini-2.5-flash';
+      // КАСКАДНА СИСТЕМА: Першою йде знайдена тобою крута Qwen, резервом — стабільна Llama 3
+      const modelsToTry = ['qwen/qwen3.8-27b', 'llama3-70b-8192'];
 
-      try {
-        const endpoint = `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${apiKey}`;
-        const firstResponse = await axios.post(
-          endpoint,
-          {
-            system_instruction: { parts: [{ text: systemInstructionText }] },
-            contents: formattedContents,
-            tools: toolsDeclaration,
-            generationConfig: { temperature: 0.75, maxOutputTokens: 700 }
-          },
-          { timeout: 10000 }
-        );
-
-        const candidate = firstResponse.data?.candidates?.[0];
-        const part = candidate?.content?.parts?.[0];
-
-        if (part?.functionCall && part.functionCall.name === 'searchCatalogInfo') {
-          const args = part.functionCall.args || {};
-          const catalogData = await fetchExternalCatalogInfo(args.query || prompt, args.category || (isCinema ? 'movie' : 'game'));
-
-          const secondContents = [
-            ...formattedContents,
-            candidate.content,
+      for (const modelName of modelsToTry) {
+        try {
+          const firstResponse = await axios.post(
+            'https://api.groq.com/openai/v1/chat/completions',
             {
-              role: 'user',
-              parts: [
-                {
-                  functionResponse: {
-                    name: 'searchCatalogInfo',
-                    response: { result: catalogData }
-                  }
-                }
-              ]
-            }
-          ];
-
-          const secondResponse = await axios.post(
-            endpoint,
-            {
-              system_instruction: { parts: [{ text: systemInstructionText }] },
-              contents: secondContents,
-              generationConfig: { temperature: 0.75, maxOutputTokens: 700 }
+              model: modelName,
+              messages: messagesArray,
+              tools: toolsDeclaration,
+              temperature: 0.7,
+              max_tokens: 1024
             },
-            { timeout: 10000 }
+            { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
           );
 
-          const finalText = secondResponse.data?.candidates?.[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n');
-          if (finalText) return res.json({ reply: finalText.trim() });
-        }
+          const msg = firstResponse.data.choices[0].message;
 
-        const replyText = candidate?.content?.parts?.map(p => p.text).filter(Boolean).join('\n');
-        if (replyText) return res.json({ reply: replyText.trim() });
-      } catch (apiErr) {
-        apiErrorMessage = apiErr.response?.data?.error?.message || apiErr.message;
-        console.error(`Помилка моделі ${modelName}:`, apiErrorMessage);
+          if (msg.tool_calls && msg.tool_calls.length > 0) {
+            const toolCall = msg.tool_calls[0];
+            const args = JSON.parse(toolCall.function.arguments);
+            const catalogData = await fetchExternalCatalogInfo(args.query || prompt, args.category || (isCinema ? 'movie' : 'game'));
+
+            messagesArray.push(msg);
+            messagesArray.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolCall.function.name,
+              content: catalogData
+            });
+
+            const secondResponse = await axios.post(
+              'https://api.groq.com/openai/v1/chat/completions',
+              {
+                model: modelName,
+                messages: messagesArray,
+                temperature: 0.7,
+                max_tokens: 1024
+              },
+              { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+            );
+
+            successReply = secondResponse.data.choices[0].message.content.trim();
+          } else {
+            successReply = msg.content.trim();
+          }
+          
+          if (successReply) break; 
+          
+        } catch (apiErr) {
+          apiErrorMessage = apiErr.response?.data?.error?.message || apiErr.message;
+          console.error(`Модель Groq ${modelName} впала:`, apiErrorMessage);
+        }
       }
 
       if (successReply) {
         return res.json({ reply: successReply });
       }
     } else {
-      apiErrorMessage = 'Ключ GEMINI_API_KEY не знайдено у файлі .env';
+      apiErrorMessage = 'Ключ GROQ_API_KEY не знайдено у файлі .env';
     }
 
-    // Резервний локальний аналізатор
     const lowerPrompt = (prompt || '').toLowerCase();
+    const asksAboutMovie = lowerPrompt.includes('фільм') || lowerPrompt.includes('серіал') || lowerPrompt.includes('аніме') || lowerPrompt.includes('кіно');
+    const asksAboutGame = lowerPrompt.includes('гра') || lowerPrompt.includes('ігр') || lowerPrompt.includes('пограти');
+
+    if (isCinema && asksAboutGame) {
+      return res.json({ reply: "Я розбираюся тільки в кіно! Для ігор перейди у вкладку 'ШІ-Порадник Ігор'." });
+    }
+    if (!isCinema && asksAboutMovie) {
+      return res.json({ reply: "Я спеціалізуюся тільки на іграх! Щодо фільмів переходь у вкладку 'ШІ-Кінопорадник'." });
+    }
+
     const rawBacklog = items.filter(i => i.status === 'backlog');
     const rawFavorites = items.filter(i => Number(i.personalRating) >= 8).sort((a, b) => Number(b.personalRating) - Number(a.personalRating));
-
     let localReply = '';
 
     if (lowerPrompt.includes('про що') || lowerPrompt.includes('сюжет') || lowerPrompt.includes('розкажи про')) {
       const cleanedQuery = prompt.replace(/про що (гра|фільм|серіал|аніме)?|сюжет|розкажи про/gi, '').trim();
       const info = await fetchExternalCatalogInfo(cleanedQuery || prompt, isCinema ? 'movie' : 'game');
-      localReply = `*(Увага: API Gemini тимчасово недоступне. Виводжу сирі дані з каталогу)*\n\n${info}`;
+      localReply = `*(Увага: Швидке API тимчасово недоступне. Виводжу сирі дані з каталогу)*\n\n${info}`;
     } else if (lowerPrompt.includes('смак') || lowerPrompt.includes('аналіз') || lowerPrompt.includes('проаналізуй')) {
       const topThree = items.slice(0, 3).map(i => `**${i.title}** (${i.playtime || 0} год)`).join(', ');
       const favString = rawFavorites.length > 0
         ? `Твої найвище оцінені фаворити — ${rawFavorites.slice(0, 3).map(i => `**${i.title}** (${i.personalRating}/10)`).join(', ')}.`
-        : 'Ти ще не встиг виставити багато високих оцінок, але за годинами вже видно серйозний досвід!';
-      localReply = `У твоєму ${isCinema ? 'кіновсесвіті' : 'ігровому профілі'} зараз **${items.length}** тайтлів та солідні **${totalHours} год**. Найбільше часу ти провів у ${topThree || 'своїх улюблених проєктах'}. ${favString} За жанрами у тебе переважають **${topGenres.slice(0, 3).join(', ') || 'різнопланові хіти'}**!`;
+        : 'Ти ще не встиг виставити багато високих оцінок!';
+      localReply = `У твоєму ${isCinema ? 'кіновсесвіті' : 'ігровому профілі'} зараз **${items.length}** тайтлів та солідні **${totalHours} год**. Найбільше часу ти провів у ${topThree || 'своїх улюблених проєктах'}. ${favString}`;
     } else if (rawBacklog.length > 0 && (lowerPrompt.includes('пограти') || lowerPrompt.includes('подивитись') || lowerPrompt.includes('порадь'))) {
       const pick = rawBacklog[Math.floor(Math.random() * Math.min(rawBacklog.length, 8))];
-      const secondPick = rawBacklog.find(i => i._id !== pick._id);
-      localReply = `Заглянув у твій беклог (там зараз чекають **${rawBacklog.length}** тайтлів) і раджу сьогодні ввечері увірватися в **${pick.title}**${pick.releaseYear ? ` (${pick.releaseYear})` : ''}!${secondPick ? ` А якщо хочеться іншого настрою — зверни увагу на **${secondPick.title}**.` : ''} Обидва варіанти чудово пасують до твоєї колекції.`;
+      localReply = `Заглянув у твій беклог і раджу сьогодні ввечері увірватися в **${pick.title}**${pick.releaseYear ? ` (${pick.releaseYear})` : ''}! Це чудовий варіант для твоєї колекції.`;
     } else {
-      localReply = `У твоїй колекції зараз **${items.length}** тайтлів (**${totalHours} год**). Запитай мене про твій смак, беклог або сюжет будь-якого тайтлу!`;
+      localReply = `У твоїй колекції зараз **${items.length}** тайтлів. Запитай мене про твій смак, беклог або сюжет будь-якого тайтлу!`;
     }
 
     return res.json({
-      reply: `${localReply}\n\n*(Технічна інформація: API Gemini наразі недоступне. Остання помилка: ${apiErrorMessage})*`
+      reply: `${localReply}\n\n*(Технічна інформація: API Groq недоступне. Помилка: ${apiErrorMessage})*`
     });
 
   } catch (err) {
@@ -797,7 +797,13 @@ router.post('/ai-assistant', auth, async (req, res) => {
   }
 });
 
-// Захищено від Mass Assignment через sanitizeItemPayload
+router.get('/', auth, async (req, res) => {
+  try {
+    const items = await Item.find({ user: getUserId(req) }).sort({ playtime: -1, createdAt: -1 }).lean();
+    res.json(items);
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
 router.post('/', auth, async (req, res) => {
   try {
     const cleanData = sanitizeItemPayload(req.body);
@@ -807,7 +813,6 @@ router.post('/', auth, async (req, res) => {
   } catch (err) { res.status(400).json({ message: err.message }); }
 });
 
-// Захищено від Mass Assignment через sanitizeItemPayload
 router.put('/:id', auth, async (req, res) => {
   try {
     const cleanData = sanitizeItemPayload(req.body);
