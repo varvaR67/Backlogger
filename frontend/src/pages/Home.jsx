@@ -1032,18 +1032,9 @@ const fetchItems = async () => {
     }, 85);
   };
 
-  const handleSupportProject = async () => {
-    const jarUrl = import.meta.env.VITE_MONO_JAR_URL;
-    if (jarUrl) {
-      window.open(jarUrl, '_blank', 'noopener,noreferrer');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText('4874070010763785');
-      toast.success('Номер картки Монобанк скопійовано (4874070010763785)', { icon: '🐈‍⬛' });
-    } catch (err) {
-      toast('Картка Монобанк: 4874070010763785', { icon: '💳' });
-    }
+const handleSupportProject = () => {
+    const jarUrl = "https://send.monobank.ua/jar/6DBycstjdj";
+    window.open(jarUrl, '_blank', 'noopener,noreferrer');
   };
 
   const resetAllFilters = () => {
