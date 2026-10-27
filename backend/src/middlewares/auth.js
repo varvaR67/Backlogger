@@ -1,24 +1,24 @@
 const jwt = require('jsonwebtoken');
 
 module.exports = function (req, res, next) {
-  // Шукаємо токен у заголовках запиту
-  const token = req.header('Authorization');
+  const authHeader = req.header('Authorization') || req.headers.authorization;
 
-  if (!token) {
-    return res.status(401).json({ message: 'Доступ заборонено. Токен відсутній.' });
+  if (!authHeader || typeof authHeader !== 'string') {
+    return res.status(401).json({ message: 'Немає токена авторизації, доступ заборонено' });
+  }
+
+  const parts = authHeader.trim().split(/\s+/);
+  const actualToken = parts.length === 2 && /^Bearer$/i.test(parts[0]) ? parts[1] : parts[0];
+
+  if (!actualToken) {
+    return res.status(401).json({ message: 'Неправильний формат токена' });
   }
 
   try {
-    // Токен зазвичай приходить у форматі "Bearer <сам_токен>", тому відрізаємо зайве
-    const actualToken = token.replace('Bearer ', '');
-    
-    // Розшифровуємо токен нашим секретним ключем
     const decoded = jwt.verify(actualToken, process.env.JWT_SECRET);
-    
-    // Записуємо ID користувача в запит і пропускаємо його далі до бази даних
-    req.user = decoded; 
+    req.user = decoded;
     next();
   } catch (err) {
-    res.status(401).json({ message: 'Токен недійсний або прострочений.' });
+    return res.status(401).json({ message: 'Токен недійсний або термін його дії закінчився' });
   }
 };

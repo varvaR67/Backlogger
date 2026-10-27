@@ -207,61 +207,152 @@ function LiveSessionTimer({ activeSession, onStop }) {
 
 function AiModal({ onClose, mode = 'games' }) {
   const isCinema = mode === 'movies';
+  const initialGreeting = isCinema
+    ? 'Привіт! Я твій ШІ-Кінопорадник. Бачу твою колекцію та оцінки — запитай мене про сюжет будь-якого фільму чи серіалу, попроси пораду на вечір або розбір твого кіносмаку!'
+    : 'Привіт! Я твій ігровий ШІ-Порадник. Я вже просканував твій беклог, награні години та оцінки — питай, що запустити сьогодні ввечері, про що будь-яка гра або попроси чесний розбір твого смаку!';
+
   const [aiMessages, setAiMessages] = useState([
-    {
-      role: 'ai',
-      text: isCinema
-        ? 'Привіт! Я твій ШІ-Кінопорадник. Запитай мене про фільми, серіали чи аніме!'
-        : 'Привіт! Я твій ігровий ШІ-Порадник. Запитай мене про ігри або твою колекцію!'
-    }
+    { role: 'ai', text: initialGreeting }
   ]);
   const [aiInput, setAiInput] = useState('');
   const [isAiThinking, setIsAiThinking] = useState(false);
   const messagesEndRef = useRef(null);
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [aiMessages, isAiThinking]);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [aiMessages, isAiThinking]);
 
   const handleAskAi = async (customPrompt) => {
     const textToSend = typeof customPrompt === 'string' ? customPrompt : aiInput.trim();
-    if (!textToSend) return;
-    setAiMessages(prev => [...prev, { role: 'user', text: textToSend }]);
+    if (!textToSend || isAiThinking) return;
+
+    const updatedHistory = [...aiMessages, { role: 'user', text: textToSend }];
+    setAiMessages(updatedHistory);
     if (typeof customPrompt !== 'string') setAiInput('');
     setIsAiThinking(true);
+
     try {
-      const res = await axios.post('/api/items/ai-assistant', { prompt: textToSend, mode });
+      const res = await axios.post('/api/items/ai-assistant', {
+        prompt: textToSend,
+        mode,
+        history: updatedHistory.slice(1) // Передаємо всю історію розмови без стартового привітання
+      });
       setAiMessages(prev => [...prev, { role: 'ai', text: res.data.reply }]);
     } catch (error) {
-      setAiMessages(prev => [...prev, { role: 'ai', text: 'Помилка звʼязку з сервером.' }]);
-    } finally { setIsAiThinking(false); }
+      setAiMessages(prev => [...prev, { role: 'ai', text: 'Не вдалося зʼєднатися з сервером ШІ. Перевір, чи запущено бекенд.' }]);
+    } finally {
+      setIsAiThinking(false);
+    }
+  };
+
+  const quickQuestions = isCinema
+    ? [
+        'Що подивитись сьогодні ввечері?',
+        'Проаналізуй мій кіносмак',
+        'Про що фільм Інтерстеллар?',
+        'Порадь трилер із крутим фіналом'
+      ]
+    : [
+        'Що пограти сьогодні ввечері?',
+        'Проаналізуй мій ігровий смак',
+        'Про що гра S.T.A.L.K.E.R. 2?',
+        'Що пройти з мого беклогу найпершим?'
+      ];
+
+  const renderFormattedText = (text = '') => {
+    return text.split('\n').map((line, lineIdx) => {
+      const parts = line.split(/(\*\*.*?\*\*)/g);
+      return (
+        <p key={lineIdx} className={lineIdx > 0 ? 'mt-2' : ''}>
+          {parts.map((part, partIdx) => {
+            if (part.startsWith('**') && part.endsWith('**')) {
+              return <strong key={partIdx} className="font-extrabold text-white">{part.slice(2, -2)}</strong>;
+            }
+            return <span key={partIdx}>{part}</span>;
+          })}
+        </p>
+      );
+    });
   };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} className="fixed inset-0 bg-black/75 backdrop-blur-xl z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} onClick={(e) => e.stopPropagation()} className="w-full max-w-lg bg-[#0e0e13] border-t sm:border border-white/15 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+      <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }} onClick={(e) => e.stopPropagation()} className="w-full max-w-lg bg-[#0e0e13] border-t sm:border border-white/15 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
         <div className="p-4 sm:p-5 bg-[#14141c] border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className={`p-2.5 rounded-2xl border ${isCinema ? 'bg-rose-500/15 border-rose-400/30 text-rose-300' : 'bg-indigo-500/15 border-indigo-400/30 text-indigo-300'}`}><Bot className="w-5 h-5" /></div>
+            <div className={`p-2.5 rounded-2xl border ${isCinema ? 'bg-rose-500/15 border-rose-400/30 text-rose-300' : 'bg-indigo-500/15 border-indigo-400/30 text-indigo-300'}`}>
+              <Bot className="w-5 h-5" />
+            </div>
             <div>
               <h3 className="text-base font-bold text-white">{isCinema ? 'ШІ-Кінопорадник' : 'ШІ-Порадник Ігор'}</h3>
-              <p className="text-[11px] text-gray-400">Персональний гід по твоїй колекції</p>
+              <p className="text-[11px] text-gray-400">Памʼятає контекст розмови та знає твої оцінки</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white p-1"><X className="w-5 h-5" /></button>
+          <div className="flex items-center gap-1.5">
+            {aiMessages.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setAiMessages([{ role: 'ai', text: initialGreeting }])}
+                className="text-[11px] text-gray-400 hover:text-white px-2.5 py-1 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
+                title="Очистити діалог"
+              >
+                Очистити
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-white p-1"><X className="w-5 h-5" /></button>
+          </div>
         </div>
-        <div className="p-4 overflow-y-auto space-y-3 flex-1 min-h-[260px]">
+
+        <div className="p-4 overflow-y-auto space-y-3 flex-1 min-h-[280px]">
           {aiMessages.map((m, idx) => (
             <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs sm:text-sm leading-relaxed ${m.role === 'user' ? (isCinema ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white') : 'bg-white/[0.05] border border-white/10 text-gray-200'}`}>
-                {m.text}
+              <div className={`max-w-[86%] rounded-2xl px-4 py-2.5 text-xs sm:text-sm leading-relaxed ${m.role === 'user' ? (isCinema ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white') : 'bg-white/[0.05] border border-white/10 text-gray-200'}`}>
+                {renderFormattedText(m.text)}
               </div>
             </div>
           ))}
-          {isAiThinking && <div className={`text-xs animate-pulse px-2 ${isCinema ? 'text-rose-300' : 'text-indigo-300'}`}>Аналізую...</div>}
+          {isAiThinking && (
+            <div className={`text-xs animate-pulse px-2 flex items-center gap-2 ${isCinema ? 'text-rose-300' : 'text-indigo-300'}`}>
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <span>Аналізую колекцію та шукаю деталі...</span>
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
+
+        <div className="px-4 pb-2 pt-1 flex flex-wrap gap-1.5">
+          {quickQuestions.map(q => (
+            <button
+              key={q}
+              type="button"
+              disabled={isAiThinking}
+              onClick={() => handleAskAi(q)}
+              className={`text-[11px] bg-white/[0.04] border border-white/10 text-gray-300 hover:text-white px-2.5 py-1.5 rounded-xl transition-all ${
+                isCinema ? 'hover:bg-rose-500/20 hover:border-rose-400/40' : 'hover:bg-indigo-500/20 hover:border-indigo-400/40'
+              }`}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
+
         <form onSubmit={(e) => { e.preventDefault(); handleAskAi(); }} className="p-4 border-t border-white/10 flex gap-2">
-          <input type="text" value={aiInput} onChange={(e) => setAiInput(e.target.value)} placeholder="Напиши запитання..." className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-indigo-500/60" />
-          <button type="submit" disabled={isAiThinking} className={`px-4 py-2.5 rounded-xl text-white font-semibold text-xs flex items-center gap-1.5 ${isCinema ? 'bg-rose-600 hover:bg-rose-500' : 'bg-indigo-500 hover:bg-indigo-600'}`}><Send className="w-4 h-4" /></button>
+          <input
+            type="text"
+            value={aiInput}
+            onChange={(e) => setAiInput(e.target.value)}
+            placeholder={isCinema ? 'Запитай про фільм, акторів або що глянути...' : 'Запитай про гру, сюжет або що запустити...'}
+            className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-indigo-500/60"
+          />
+          <button
+            type="submit"
+            disabled={isAiThinking}
+            className={`px-4 py-2.5 rounded-xl text-white font-semibold text-xs flex items-center gap-1.5 transition-all ${
+              isCinema ? 'bg-rose-600 hover:bg-rose-500' : 'bg-indigo-500 hover:bg-indigo-600'
+            }`}
+          >
+            <Send className="w-4 h-4" />
+          </button>
         </form>
       </motion.div>
     </motion.div>
@@ -298,6 +389,8 @@ export default function Home({ username, onLogout }) {
 
   const [showSteamPromo, setShowSteamPromo] = useState(false);
   const [profileLoaded, setProfileLoaded] = useState(false);
+  const [itemsLoaded, setItemsLoaded] = useState(false);
+  const unlockedAchRef = useRef(null);
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -380,8 +473,13 @@ export default function Home({ username, onLogout }) {
     setLocalSearch('');
   }, [activeView]);
 
-  const fetchItems = async () => {
-    try { const res = await axios.get('/api/items'); setItems(res.data); } catch (error) {}
+const fetchItems = async () => {
+    try {
+      const res = await axios.get('/api/items');
+      setItems(res.data);
+    } catch (error) {} finally {
+      setItemsLoaded(true);
+    }
   };
 
   const fetchFeed = async () => {

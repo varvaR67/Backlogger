@@ -37,27 +37,29 @@ function AppContent() {
     setFormData({ username: '', password: '' });
   };
 
-  const handleSubmit = async (e) => {
+const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
       const res = await axios.post(endpoint, formData);
 
+      // Оскільки тепер бекенд видає токен і при вході, і при реєстрації,
+      // ми одразу зберігаємо його і пускаємо користувача на сайт
+      const receivedToken = res.data.token;
+      const receivedUser = res.data.username || formData.username;
+      
+      localStorage.setItem('token', receivedToken);
+      localStorage.setItem('username', receivedUser);
+      setUsername(receivedUser);
+      setToken(receivedToken);
+      setFormData({ username: '', password: '' });
+      setShowAuthModal(false);
+      
       if (isLogin) {
-        const receivedToken = res.data.token;
-        const receivedUser = res.data.username || formData.username;
-        localStorage.setItem('token', receivedToken);
-        localStorage.setItem('username', receivedUser);
-        setUsername(receivedUser);
-        setToken(receivedToken);
-        setFormData({ username: '', password: '' });
-        setShowAuthModal(false);
         toast.success(`Вітаємо у всесвіті Backlogger, ${receivedUser}!`, { icon: '🚀' });
       } else {
-        setFormData({ username: '', password: '' });
-        setIsLogin(true);
-        toast.success('Акаунт зареєстровано! Тепер введи свій логін та пароль, щоб увійти.', { icon: '🎉' });
+        toast.success('Акаунт успішно створено! Вітаємо!', { icon: '🎉' });
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Помилка авторизації');
