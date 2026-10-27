@@ -1,27 +1,30 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import axios from 'axios';
 import { Toaster, toast } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, Gamepad2, Film, Trophy, ArrowUp, RefreshCw, X, LogIn, UserPlus } from 'lucide-react';
 import Home from './pages/Home';
-import { useTranslation } from './i18n';
+import { LanguageProvider, useTranslation } from './i18n';
 
-export default function App() {
+// Єдине налаштування базового URL та синхронне підключення токена до всіх запитів
+axios.defaults.baseURL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+axios.interceptors.request.use((config) => {
+  const savedToken = localStorage.getItem('token');
+  if (savedToken) {
+    config.headers.Authorization = `Bearer ${savedToken}`;
+  }
+  return config;
+});
+
+function AppContent() {
   const { t, lang, changeLanguage } = useTranslation();
-  const [token, setToken] = useState(localStorage.getItem('token') || '');
-  const [username, setUsername] = useState(localStorage.getItem('username') || '');
+  const [token, setToken] = useState(() => localStorage.getItem('token') || '');
+  const [username, setUsername] = useState(() => localStorage.getItem('username') || '');
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [isLogin, setIsLogin] = useState(false);
   const [formData, setFormData] = useState({ username: '', password: '' });
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    } else {
-      delete axios.defaults.headers.common['Authorization'];
-    }
-  }, [token]);
 
   const openAuth = (loginMode = false) => {
     setIsLogin(loginMode);
@@ -39,17 +42,18 @@ export default function App() {
     setLoading(true);
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-      const res = await axios.post(`http://localhost:5000${endpoint}`, formData);
+      const res = await axios.post(endpoint, formData);
 
       if (isLogin) {
-        localStorage.setItem('token', res.data.token);
-        localStorage.setItem('username', res.data.username || formData.username);
-        axios.defaults.headers.common['Authorization'] = `Bearer ${res.data.token}`;
-        setUsername(res.data.username || formData.username);
-        setToken(res.data.token);
+        const receivedToken = res.data.token;
+        const receivedUser = res.data.username || formData.username;
+        localStorage.setItem('token', receivedToken);
+        localStorage.setItem('username', receivedUser);
+        setUsername(receivedUser);
+        setToken(receivedToken);
         setFormData({ username: '', password: '' });
         setShowAuthModal(false);
-        toast.success(`Вітаємо у всесвіті Backlogger, ${res.data.username || formData.username}!`, { icon: '🚀' });
+        toast.success(`Вітаємо у всесвіті Backlogger, ${receivedUser}!`, { icon: '🚀' });
       } else {
         setFormData({ username: '', password: '' });
         setIsLogin(true);
@@ -65,7 +69,6 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('username');
-    delete axios.defaults.headers.common['Authorization'];
     setToken('');
     setUsername('');
     setFormData({ username: '', password: '' });
@@ -105,7 +108,6 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Вибір мови на вступній сторінці */}
           <div className="flex items-center bg-[#12121c] p-1 rounded-full border border-white/10 gap-1 mr-1">
             {[
               { code: 'uk', label: 'UA' },
@@ -114,6 +116,7 @@ export default function App() {
             ].map((l) => (
               <button
                 key={l.code}
+                type="button"
                 onClick={() => changeLanguage(l.code)}
                 className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold transition-all ${
                   lang === l.code ? 'bg-indigo-500 text-white shadow-md' : 'text-gray-400 hover:text-white'
@@ -285,16 +288,15 @@ export default function App() {
                 </div>
               </div>
 
-              <form key={isLogin ? 'login-mode' : 'register-mode'} onSubmit={handleSubmit} autoComplete="off" className="space-y-4">
+              <form key={isLogin ? 'login-mode' : 'register-mode'} onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label className="block text-xs font-semibold text-gray-300 mb-1.5">{t('auth_name')}</label>
                   <input
                     type="text"
                     required
-                    autoComplete="off"
+                    autoComplete="username"
                     value={formData.username}
                     onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                    placeholder={t('auth_name_ph')}
                     className="w-full bg-black/60 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500"
                   />
                 </div>
@@ -303,7 +305,7 @@ export default function App() {
                   <input
                     type="password"
                     required
-                    autoComplete="new-password"
+                    autoComplete={isLogin ? 'current-password' : 'new-password'}
                     value={formData.password}
                     onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                     className="w-full bg-black/60 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500"
@@ -324,5 +326,13 @@ export default function App() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <LanguageProvider>
+      <AppContent />
+    </LanguageProvider>
   );
 }
