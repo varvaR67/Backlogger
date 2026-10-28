@@ -842,7 +842,7 @@ const fetchItems = async () => {
     } catch (e) {} finally { setIsSavingProfile(false); }
   };
 
-  const handleAddGame = async (itemData, requestedStatus) => {
+const handleAddGame = async (itemData, requestedStatus) => {
     const mediaType = itemData.mediaType || (isCinemaView ? 'movie' : 'game');
     const existing = items.find(item => item.title.toLowerCase() === itemData.title.toLowerCase() && (item.mediaType || 'game') === mediaType);
     if (existing) {
@@ -856,6 +856,14 @@ const fetchItems = async () => {
     const targetStatus = requestedStatus || (activeFilter === 'wishlist' ? 'wishlist' : 'backlog');
     const autoPlaytime = (mediaType === 'movie' && targetStatus === 'completed') ? Math.round(((itemData.runtimeMinutes || 130) / 60) * 10) / 10 : 0;
 
+    const statusLabels = {
+      wishlist: mediaType === 'game' ? 'додано у вішліст ❤️' : 'додано у список бажаного ❤️',
+      backlog: mediaType === 'game' ? 'додано в беклог 📋' : 'додано в плани на перегляд 📋',
+      playing: mediaType === 'game' ? 'додано в «Граю зараз» 🔥' : 'додано в «Дивлюсь зараз» 🍿',
+      paused: 'поставлено на паузу ⏸️',
+      completed: mediaType === 'game' ? 'додано в пройдене 🏆' : 'додано в переглянуте 🏆'
+    };
+
     try {
       const res = await axios.post('/api/items', {
         title: itemData.title, mediaType, imageUrl: itemData.imageUrl, releaseYear: itemData.releaseYear,
@@ -864,14 +872,13 @@ const fetchItems = async () => {
         playtime: autoPlaytime, currentSeason: 1, currentEpisode: 0, totalEpisodes: itemData.totalEpisodes || null, status: targetStatus
       });
       setItems(prev => [res.data, ...prev]);
-      toast.success(`"${itemData.title}" додано!`, { icon: mediaType === 'game' ? '🎮' : '🍿' });
+      toast.success(`"${itemData.title}" ${statusLabels[targetStatus] || 'додано!'}`, { icon: mediaType === 'game' ? '🎮' : '🍿' });
       if (activeView === 'community') {
         fetchFeed(); fetchTrending(); fetchLeaderboard();
       }
     } catch (error) { toast.error('Не вдалося додати'); }
   };
 
-  // Паралельний імпорт 10 фільмів через Promise.all без блокування інтерфейсу
   const handleBulkImportTopMovies = async () => {
     const toAdd = top100Movies.filter(m => !movieItems.some(existing => existing.title.toLowerCase() === m.title.toLowerCase())).slice(0, 10);
     if (toAdd.length === 0) return toast.error('Ці фільми вже у твоїй колекції!');
@@ -894,17 +901,27 @@ const fetchItems = async () => {
   const handleUpdateStatus = async (e, id, newStatus, itemTitle) => {
     if (e) e.stopPropagation();
     const targetItem = items.find(i => i._id === id);
+    const isMedia = targetItem?.mediaType && targetItem.mediaType !== 'game';
     const payload = { status: newStatus };
     let autoHoursAdded = 0;
     if (targetItem && targetItem.mediaType === 'movie' && newStatus === 'completed' && (!targetItem.playtime || targetItem.playtime === 0)) {
       autoHoursAdded = Math.round(((targetItem.runtimeMinutes || 125) / 60) * 10) / 10;
       payload.playtime = autoHoursAdded;
     }
+
+    const statusUpdateLabels = {
+      backlog: isMedia ? 'перенесено в «У планах» 📋' : 'перенесено в «Беклог» 📋',
+      playing: isMedia ? 'перенесено в «Дивлюсь зараз» 🍿' : 'перенесено в «Граю зараз» 🔥',
+      paused: 'поставлено на паузу ⏸️',
+      completed: isMedia ? 'відмічено як переглянуте 🏆' : 'відмічено як пройдене 🏆',
+      wishlist: 'перенесено у бажане ❤️'
+    };
+
     try {
       const res = await axios.put(`/api/items/${id}`, payload);
       setItems(prev => prev.map(item => item._id === id ? res.data : item));
-      if (autoHoursAdded > 0) toast.success(`"${itemTitle}" переглянуто! +${autoHoursAdded} год`, { icon: '🍿' });
-      else toast.success(`Статус "${itemTitle}" оновлено`, { icon: '✨' });
+      if (autoHoursAdded > 0) toast.success(`"${itemTitle}" переглянуто! +${autoHoursAdded} год 🏆`, { icon: '🍿' });
+      else toast.success(`"${itemTitle}" ${statusUpdateLabels[newStatus] || 'оновлено'}`, { icon: isMedia ? '🎬' : '🎮' });
       if (activeView === 'community') {
         fetchTrending(); fetchLeaderboard();
       }
@@ -932,11 +949,22 @@ const fetchItems = async () => {
       await axios.delete(`/api/items/${id}`);
       setItems(prev => prev.filter(item => item._id !== id));
       if (selectedGame?._id === id) setSelectedGame(null);
-      toast.success(`"${gameTitle}" видалено`, { icon: '🗑️' });
+      toast.success(`"${gameTitle}" видалено з колекції`, { icon: '🗑️' });
     } catch (e) {}
   };
 
   const openGameDetails = (item) => {
+    const isOwnedSteam = (!item.mediaType || item.mediaType === 'game') && (Boolean(item.steamAppId) || Number(item.playtime) > 0);
+    if (item.status === 'wishlist' && !isOwnedSteam) {
+      const isMedia = item.mediaType && item.mediaType !== 'game';
+      toast.error(
+        isMedia
+          ? `Спочатку перенеси "${item.title}" зі списку бажаного в «План» або «Дивлюсь», щоб виставити оцінку!`
+          : `Спочатку перенеси "${item.title}" з вішліста в «Беклог» або «Граю», щоб виставити оцінку!`,
+        { icon: '🔒' }
+      );
+      return;
+    }
     setSelectedGame(item);
     setRatingInput(item.personalRating || null);
     setPlaytimeInput(item.playtime || 0);
@@ -1481,7 +1509,7 @@ const handleSupportProject = () => {
                         </button>
                         <div onClick={(e) => e.stopPropagation()} className="mt-auto grid grid-cols-4 bg-black/60 rounded-xl p-0.5 border border-white/[0.07] gap-0.5">
                           {[{ id: 'backlog', label: t('st_backlog') }, { id: 'playing', label: t('st_playing') }, { id: 'paused', label: t('st_paused') }, { id: 'completed', label: t('st_completed') }].map(st => {
-                            const currentSt = item.status === 'wishlist' ? 'playing' : item.status;
+                            const currentSt = (item.status === 'wishlist' && isOwnedSteamGame) ? 'playing' : item.status;
                             return (
                               <button key={st.id} onClick={(e) => handleUpdateStatus(e, item._id, st.id, item.title)} className={`py-1 text-[8px] sm:text-[9px] font-bold rounded-lg truncate ${currentSt === st.id ? 'bg-indigo-500/30 text-indigo-200 border border-indigo-400/30' : 'text-gray-500 hover:text-gray-300'}`}>{st.label}</button>
                             );
@@ -2353,14 +2381,40 @@ const handleSupportProject = () => {
         )}
       </AnimatePresence>
 
-      {/* ДЕТАЛІ ГРИ / ФІЛЬМУ */}
+{/* ДЕТАЛІ ГРИ / ФІЛЬМУ */}
       <AnimatePresence>
         {selectedGame && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedGame(null)} className="fixed inset-0 bg-black/75 backdrop-blur-xl z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
             <motion.div initial={{ opacity: 0, scale: 0.95, y: 30 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 30 }} onClick={(e) => e.stopPropagation()} className="w-full max-w-xl max-h-[92vh] overflow-y-auto bg-[#0e0e13] border border-white/15 rounded-3xl p-5 sm:p-6 shadow-2xl">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-extrabold text-white truncate">{selectedGame.title}</h2>
-                <button onClick={() => setSelectedGame(null)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+              <div className="flex items-start justify-between gap-4 mb-5 pb-4 border-b border-white/10">
+                <div className="flex items-center gap-4 min-w-0">
+                  <img
+                    src={selectedGame.imageUrl || 'https://via.placeholder.com/120x160/1a1a1a/ffffff?text=Cover'}
+                    alt={selectedGame.title}
+                    onError={(e) => { if (e.target.src.includes('library_600x900.jpg')) e.target.src = e.target.src.replace('library_600x900.jpg', 'header.jpg'); }}
+                    className="w-16 h-22 sm:w-20 sm:h-28 object-cover rounded-2xl border border-white/15 shadow-lg shrink-0 bg-black"
+                  />
+                  <div className="min-w-0">
+                    <h2 className="text-lg sm:text-2xl font-extrabold text-white truncate">{selectedGame.title}</h2>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {selectedGame.releaseYear ? `${selectedGame.releaseYear} • ` : ''}
+                      {(selectedGame.genres || []).join(', ') || (selectedGame.mediaType === 'game' ? 'Гра' : 'Кіно')}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                      {selectedGame.metacritic && (
+                        <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 text-xs font-extrabold">
+                          ★ {selectedGame.metacritic}
+                        </span>
+                      )}
+                      <span className="px-2.5 py-0.5 rounded-lg bg-white/5 border border-white/10 text-gray-300 text-xs font-semibold">
+                        {selectedGame.playtime || 0} {t('hours_short')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setSelectedGame(null)} className="text-gray-400 hover:text-white p-1.5 rounded-xl hover:bg-white/10 transition-colors shrink-0">
+                  <X className="w-5 h-5" />
+                </button>
               </div>
               <form onSubmit={handleSaveDetails} className="space-y-4">
                 <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-4 text-center">

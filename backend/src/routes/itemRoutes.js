@@ -356,59 +356,186 @@ router.delete('/playlists/:id', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: 'Помилка видалення' }); }
 });
 
+// Заміни свої старі router.get('/search', ...) та router.get('/search-media', ...) у файлі backend/src/routes/itemRoutes.js на ці:
+
 router.get('/search', auth, async (req, res) => {
-  const query = req.query.q;
-  if (!query) return res.json([]);
+  const query = (req.query.q || '').trim();
+  const genre = (req.query.genre || '').trim();
+  const category = (req.query.category || '').trim();
+  const year = (req.query.year || '').trim();
+  const sort = (req.query.sort || 'popular').trim();
+
+  if (!query && !genre && !category && !year) return res.json([]);
+
   try {
     if (!process.env.RAWG_API_KEY) return res.status(500).json({ message: "Ключ RAWG не знайдено" });
-    const response = await axios.get(`https://api.rawg.io/api/games?key=${process.env.RAWG_API_KEY}&search=${encodeURIComponent(query)}&page_size=5`);
-    const results = response.data.results.map(game => ({
-      rawgId: game.id, title: game.name, mediaType: 'game', imageUrl: game.background_image || '',
+
+    let url = `https://api.rawg.io/api/games?key=${process.env.RAWG_API_KEY}&page_size=12`;
+    if (query) url += `&search=${encodeURIComponent(query)}`;
+
+    const tagsList = [];
+    if (genre) {
+      if (genre.startsWith('tag:')) {
+        tagsList.push(genre.replace('tag:', ''));
+      } else {
+        url += `&genres=${encodeURIComponent(genre)}`;
+      }
+    }
+    if (category) {
+      tagsList.push(category);
+    }
+    if (tagsList.length > 0) {
+      url += `&tags=${encodeURIComponent(tagsList.join(','))}`;
+    }
+
+    if (year) {
+      if (year === '2015-2019') url += `&dates=2015-01-01,2019-12-31`;
+      else if (year === '2010-2014') url += `&dates=2010-01-01,2014-12-31`;
+      else if (year === '2000s') url += `&dates=2000-01-01,2009-12-31`;
+      else if (year === 'classic') url += `&dates=1980-01-01,1999-12-31`;
+      else url += `&dates=${year}-01-01,${year}-12-31`;
+    }
+
+    if (!query) {
+      if (sort === 'rating') url += `&ordering=-metacritic`;
+      else if (sort === 'newest') url += `&ordering=-released`;
+      else url += `&ordering=-added`;
+    }
+
+    const response = await axios.get(url, { timeout: 7000 });
+    let results = (response.data?.results || []).map(game => ({
+      rawgId: game.id,
+      title: game.name,
+      mediaType: 'game',
+      imageUrl: game.background_image || '',
       releaseYear: game.released ? parseInt(game.released.substring(0, 4)) : null,
-      metacritic: game.metacritic || null, genres: game.genres ? game.genres.map(g => g.name) : []
+      metacritic: game.metacritic || null,
+      genres: game.genres ? game.genres.map(g => g.name) : []
     }));
-    res.json(results);
-  } catch (err) { res.status(500).json({ message: "Помилка пошуку" }); }
+
+    // Сувора фільтрація року, якщо RAWG при текстовому пошуку підмішав інші роки
+    if (year) {
+      results = results.filter(item => {
+        const y = item.releaseYear;
+        if (!y) return false;
+        if (year === '2015-2019') return y >= 2015 && y <= 2019;
+        if (year === '2010-2014') return y >= 2010 && y <= 2014;
+        if (year === '2000s') return y >= 2000 && y <= 2009;
+        if (year === 'classic') return y < 2000;
+        return String(y) === String(year);
+      });
+    }
+
+    res.json(results.slice(0, 10));
+  } catch (err) {
+    res.status(500).json({ message: "Помилка пошуку ігор" });
+  }
 });
 
 router.get('/search-media', auth, async (req, res) => {
   const query = (req.query.q || '').trim();
-  if (!query) return res.json([]);
+  const genre = (req.query.genre || '').trim();
+  const category = (req.query.category || '').trim();
+  const year = (req.query.year || '').trim();
+  const sort = (req.query.sort || 'popular').trim();
+
+  if (!query && !genre && !category && !year) return res.json([]);
+
   try {
-    if (process.env.TMDB_API_KEY) {
-      const apiKey = process.env.TMDB_API_KEY.trim();
-      const tmdbRes = await axios.get(`https://api.themoviedb.org/3/search/multi?api_key=${apiKey}&query=${encodeURIComponent(query)}&language=uk-UA&page=1`, { timeout: 6000 });
-      const rawItems = (tmdbRes.data?.results || []).filter(item => (item.media_type === 'movie' || item.media_type === 'tv') && (item.poster_path || item.backdrop_path)).slice(0, 6);
-      const detailedItems = await Promise.all(rawItems.map(async (item) => {
-        const isTv = item.media_type === 'tv';
-        const dateStr = item.release_date || item.first_air_date || '';
-        const isAnime = (item.genre_ids || []).includes(16) && (item.original_language === 'ja' || (item.origin_country || []).includes('JP'));
-        let runtimeMinutes = isTv ? (isAnime ? 24 : 45) : 125;
-        let totalEpisodes = null;
-        let genres = [isAnime ? 'Аніме' : isTv ? 'Серіал' : 'Фільм'];
-        try {
-          const detailRes = await axios.get(`https://api.themoviedb.org/3/${isTv ? 'tv' : 'movie'}/${item.id}?api_key=${apiKey}&language=uk-UA`, { timeout: 3500 });
-          const d = detailRes.data;
-          if (d) {
-            if (!isTv && d.runtime > 0) runtimeMinutes = d.runtime;
-            if (isTv && Array.isArray(d.episode_run_time) && d.episode_run_time[0] > 0) runtimeMinutes = d.episode_run_time[0];
-            if (isTv && d.number_of_episodes > 0) totalEpisodes = d.number_of_episodes;
-            if (Array.isArray(d.genres) && d.genres.length > 0) genres = d.genres.slice(0, 2).map(g => g.name);
-          }
-        } catch (e) {}
-        return {
-          rawgId: `tmdb_${item.media_type}_${item.id}`, title: item.title || item.name,
-          mediaType: isAnime ? 'anime' : isTv ? 'series' : 'movie',
-          imageUrl: `https://image.tmdb.org/t/p/w500${item.poster_path || item.backdrop_path}`,
-          releaseYear: dateStr ? parseInt(dateStr.substring(0, 4)) : null,
-          metacritic: item.vote_average ? Math.round(item.vote_average * 10) : null,
-          genres, runtimeMinutes, totalEpisodes
-        };
-      }));
-      if (detailedItems.length > 0) return res.json(detailedItems);
+    if (!process.env.TMDB_API_KEY) return res.json([]);
+    const apiKey = process.env.TMDB_API_KEY.trim();
+    let rawItems = [];
+
+    if (query) {
+      const tmdbRes = await axios.get(
+        `https://api.themoviedb.org/3/search/multi?api_key=${apiKey}&query=${encodeURIComponent(query)}&language=uk-UA&page=1`,
+        { timeout: 6000 }
+      );
+      rawItems = (tmdbRes.data?.results || []).filter(
+        item => (item.media_type === 'movie' || item.media_type === 'tv') && (item.poster_path || item.backdrop_path)
+      );
+
+      if (genre) {
+        const genreId = Number(genre);
+        rawItems = rawItems.filter(item => Array.isArray(item.genre_ids) && item.genre_ids.includes(genreId));
+      }
+      if (year) {
+        rawItems = rawItems.filter(item => {
+          const itemYear = parseInt((item.release_date || item.first_air_date || '').substring(0, 4));
+          if (!itemYear) return false;
+          if (year === '2015-2019') return itemYear >= 2015 && itemYear <= 2019;
+          if (year === '2010-2014') return itemYear >= 2010 && itemYear <= 2014;
+          if (year === '2000s') return itemYear >= 2000 && itemYear <= 2009;
+          if (year === 'classic') return itemYear < 2000;
+          return String(itemYear) === String(year);
+        });
+      }
+    } else {
+      const isTvSearch = category === 'series' || category === 'anime';
+      const typeEndpoint = isTvSearch ? 'tv' : 'movie';
+      const sortParam = sort === 'rating' ? 'vote_average.desc&vote_count.gte=200' : sort === 'newest' ? (isTvSearch ? 'first_air_date.desc' : 'primary_release_date.desc') : 'popularity.desc';
+
+      let discoverUrl = `https://api.themoviedb.org/3/discover/${typeEndpoint}?api_key=${apiKey}&language=uk-UA&sort_by=${sortParam}&page=1`;
+
+      const genresToPass = [];
+      if (genre) genresToPass.push(genre);
+      if (category === 'anime' && !genresToPass.includes('16')) genresToPass.push('16');
+      if (genresToPass.length > 0) discoverUrl += `&with_genres=${encodeURIComponent(genresToPass.join(','))}`;
+      if (category === 'anime') discoverUrl += `&with_original_language=ja`;
+
+      const dateField = isTvSearch ? 'first_air_date' : 'primary_release_date';
+      if (year) {
+        if (year === '2015-2019') discoverUrl += `&${dateField}.gte=2015-01-01&${dateField}.lte=2019-12-31`;
+        else if (year === '2010-2014') discoverUrl += `&${dateField}.gte=2010-01-01&${dateField}.lte=2014-12-31`;
+        else if (year === '2000s') discoverUrl += `&${dateField}.gte=2000-01-01&${dateField}.lte=2009-12-31`;
+        else if (year === 'classic') discoverUrl += `&${dateField}.lte=1999-12-31`;
+        else discoverUrl += `&${isTvSearch ? 'first_air_date_year' : 'primary_release_year'}=${encodeURIComponent(year)}`;
+      }
+
+      const discoverRes = await axios.get(discoverUrl, { timeout: 6000 });
+      rawItems = (discoverRes.data?.results || [])
+        .filter(item => item.poster_path || item.backdrop_path)
+        .map(item => ({ ...item, media_type: typeEndpoint }));
     }
-    res.json([]);
-  } catch (err) { res.status(500).json({ message: "Помилка пошуку кіно" }); }
+
+    const detailedItems = await Promise.all(rawItems.slice(0, 8).map(async (item) => {
+      const isTv = item.media_type === 'tv';
+      const dateStr = item.release_date || item.first_air_date || '';
+      const isAnime = category === 'anime' || ((item.genre_ids || []).includes(16) && (item.original_language === 'ja' || (item.origin_country || []).includes('JP')));
+      let runtimeMinutes = isTv ? (isAnime ? 24 : 45) : 125;
+      let totalEpisodes = null;
+      let genres = [isAnime ? 'Аніме' : isTv ? 'Серіал' : 'Фільм'];
+      try {
+        const detailRes = await axios.get(`https://api.themoviedb.org/3/${isTv ? 'tv' : 'movie'}/${item.id}?api_key=${apiKey}&language=uk-UA`, { timeout: 3500 });
+        const d = detailRes.data;
+        if (d) {
+          if (!isTv && d.runtime > 0) runtimeMinutes = d.runtime;
+          if (isTv && Array.isArray(d.episode_run_time) && d.episode_run_time[0] > 0) runtimeMinutes = d.episode_run_time[0];
+          if (isTv && d.number_of_episodes > 0) totalEpisodes = d.number_of_episodes;
+          if (Array.isArray(d.genres) && d.genres.length > 0) genres = d.genres.slice(0, 2).map(g => g.name);
+        }
+      } catch (e) {}
+      return {
+        rawgId: `tmdb_${item.media_type}_${item.id}`,
+        title: item.title || item.name,
+        mediaType: isAnime ? 'anime' : isTv ? 'series' : 'movie',
+        imageUrl: `https://image.tmdb.org/t/p/w500${item.poster_path || item.backdrop_path}`,
+        releaseYear: dateStr ? parseInt(dateStr.substring(0, 4)) : null,
+        metacritic: item.vote_average ? Math.round(item.vote_average * 10) : null,
+        genres,
+        runtimeMinutes,
+        totalEpisodes
+      };
+    }));
+
+    const finalFiltered = category && category !== 'all'
+      ? detailedItems.filter(i => i.mediaType === category)
+      : detailedItems;
+
+    res.json(finalFiltered);
+  } catch (err) {
+    res.status(500).json({ message: "Помилка пошуку кіно" });
+  }
 });
 
 router.post('/steam-unlink', auth, async (req, res) => {
@@ -599,33 +726,22 @@ router.post('/ai-assistant', auth, async (req, res) => {
     const userId = getUserId(req);
 
     const allUserItems = await Item.find({ user: userId }).sort({ playtime: -1 }).lean();
-    
     const items = allUserItems.filter(i => {
       const type = i.mediaType || 'game';
       const isMedia = type === 'movie' || type === 'series' || type === 'anime';
       return isCinema ? isMedia : !isMedia;
     });
 
-    const favorites = items
-      .filter(i => Number(i.personalRating) >= 8)
-      .sort((a, b) => Number(b.personalRating) - Number(a.personalRating))
-      .slice(0, 12)
-      .map(i => `«${i.title}» (оцінка: ${i.personalRating}/10, ${i.playtime || 0} год${i.comment ? `, відгук: "${i.comment}"` : ''})`);
+    const lowerPrompt = (prompt || '').toLowerCase();
+    const asksAboutMovie = /(фільм|кіно|серіал|аніме|дивитис|подивитис)/i.test(lowerPrompt);
+    const asksAboutGame = /(гра|гру|ігри|ігор|пограти|пройти|геймплей)/i.test(lowerPrompt);
 
-    const disliked = items
-      .filter(i => i.personalRating && Number(i.personalRating) <= 5)
-      .slice(0, 6)
-      .map(i => `«${i.title}» (${i.personalRating}/10${i.comment ? `, "${i.comment}"` : ''})`);
-
-    const mostPlayed = items
-      .filter(i => i.status !== 'wishlist')
-      .slice(0, 15)
-      .map(i => `«${i.title}» (${i.playtime || 0} год, статус: ${i.status})`);
-
-    const backlogItems = items
-      .filter(i => i.status === 'backlog')
-      .slice(0, 20)
-      .map(i => `«${i.title}» (${i.releaseYear || '—'})`);
+    if (isCinema && asksAboutGame && !asksAboutMovie) {
+      return res.json({ reply: "Я розбираюся тільки в кіно, серіалах та аніме! Щодо відеоігор переходь у вкладку **ШІ-Порадник Ігор**." });
+    }
+    if (!isCinema && asksAboutMovie && !asksAboutGame) {
+      return res.json({ reply: "Я спеціалізуюся тільки на відеоіграх! Щодо фільмів та серіалів переходь у вкладку **ШІ-Кінопорадник**." });
+    }
 
     const genreCounts = {};
     items.forEach(i => {
@@ -637,159 +753,121 @@ router.post('/ai-assistant', auth, async (req, res) => {
     const topGenres = Object.entries(genreCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([g]) => g);
     const totalHours = Math.round(items.reduce((acc, i) => acc + (Number(i.playtime) || 0), 0) * 10) / 10;
 
+    // Промпт: Навчаємо ШІ перекладати англійською перед викликом пошуку
     const systemInstructionText = isCinema
-      ? `Ти — харизматичний і дотепний кінокритик. Спілкуйся українською мовою живо, по-дружньому, з легким гумором. Завжди виділяй назви фільмів чи серіалів жирним шрифтом (**Назва**).
-ВАЖЛИВЕ ПРАВИЛО: Ти консультуєш ТІЛЬКИ щодо кіно, серіалів та аніме. Якщо користувач питає про відеоігри, ти ПОВИНЕН відмовитися і сказати: "Я розбираюся тільки в кіно! Для ігор перейди у вкладку 'ШІ-Порадник Ігор'."
-Ось дані про колекцію користувача:
-- Улюблені жанри: ${topGenres.join(', ') || 'ще формуються'}.
-- Шедеври: ${favorites.join('; ') || 'немає'}.
-- Не сподобалося: ${disliked.join('; ') || 'немає'}.
-- Найбільше годин: ${mostPlayed.join('; ') || 'порожньо'}.
-- Беклог: ${backlogItems.join('; ') || 'порожньо'}.
-Якщо користувач питає про конкретний фільм чи серіал, обов'язково виклич інструмент searchCatalogInfo.`
-      : `Ти — досвідчений геймер та ігровий оглядач. Спілкуйся українською мовою як свій у дошку друг: конкретно і живо. Завжди виділяй назви ігор жирним шрифтом (**Назва**).
-ВАЖЛИВЕ ПРАВИЛО: Ти консультуєш ТІЛЬКИ щодо відеоігор. Якщо користувач питає про фільми, серіали чи аніме, ти ПОВИНЕН відмовитися і сказати: "Я спеціалізуюся тільки на іграх! Щодо фільмів переходь у вкладку 'ШІ-Кінопорадник'."
-Ось статистика гравця:
-- Улюблені жанри: ${topGenres.join(', ') || 'ще формуються'}.
-- Шедеври: ${favorites.join('; ') || 'немає'}.
-- Розчарування: ${disliked.join('; ') || 'немає'}.
-- Найбільше годин: ${mostPlayed.join('; ') || 'порожньо'}.
-- Беклог: ${backlogItems.join('; ') || 'порожньо'}.
-Якщо питають про сюжет гри — виклич інструмент searchCatalogInfo.`;
+      ? `Ти — харизматичний, розумний кінокритик на платформі Backlogger. Відповідай ТІЛЬКИ українською мовою, живо, дружньо і по суті. Назви завжди виділяй жирним (**Назва**).
+Ти консультуєш виключно про кіно, серіали та аніме. 
+ВАЖЛИВО: Якщо питають про сюжет, акторів чи деталі конкретного фільму/серіалу, ОБОВ'ЯЗКОВО виклич інструмент searchCatalogInfo. АЛЕ ПЕРЕД ЦИМ переклади назву фільму англійською мовою (наприклад, "Початок" -> "Inception").
+Дані про кіноколекцію користувача: ${items.length} тайтлів, ${totalHours} год. Улюблені жанри: ${topGenres.join(', ')}.`
+      : `Ти — досвідчений геймер та ігровий оглядач на платформі Backlogger. Відповідай ТІЛЬКИ українською мовою, живо, конкретно і як свій друг. Назви ігор завжди виділяй жирним (**Назва**).
+Ти консультуєш виключно про відеоігри. 
+ВАЖЛИВО: Якщо питають про сюжет гри, геймплей або скільки годин займає проходження (наприклад, Відьмак 3, Far Cry 5), ОБОВ'ЯЗКОВО виклич інструмент searchCatalogInfo. АЛЕ ПЕРЕД ЦИМ переклади назву гри англійською мовою (наприклад, "Відьмак 3" -> "The Witcher 3").
+Статистика гравця: ${items.length} ігор, ${totalHours} год. Улюблені жанри: ${topGenres.join(', ')}.`;
 
     const apiKey = (process.env.GROQ_API_KEY || '').trim();
-    let apiErrorMessage = '';
-    let successReply = null;
+    if (!apiKey) return res.json({ reply: 'API ключ не налаштовано.' });
 
-    if (apiKey) {
-      const messagesArray = [{ role: 'system', content: systemInstructionText }];
-      
-      const recentHistory = Array.isArray(history) ? history.slice(-10) : [];
-      for (const msg of recentHistory) {
-        if (!msg || !msg.text) continue;
-        messagesArray.push({
-          role: msg.role === 'ai' ? 'assistant' : 'user',
-          content: String(msg.text)
-        });
-      }
+    const messagesArray = [{ role: 'system', content: systemInstructionText }];
+    const recentHistory = Array.isArray(history) ? history.slice(-8) : [];
+    
+    for (const msg of recentHistory) {
+      if (!msg || !msg.text) continue;
+      messagesArray.push({
+        role: msg.role === 'ai' ? 'assistant' : 'user',
+        content: String(msg.text)
+      });
+    }
 
-      if (messagesArray.length === 1 || messagesArray[messagesArray.length - 1].role !== 'user') {
-        messagesArray.push({ role: 'user', content: String(prompt) });
-      }
+    if (messagesArray.length === 1 || messagesArray[messagesArray.length - 1].role !== 'user') {
+      messagesArray.push({ role: 'user', content: String(prompt) });
+    }
 
-      const toolsDeclaration = [{
-        type: "function",
-        function: {
-          name: "searchCatalogInfo",
-          description: "Шукає інформацію про сюжет та рейтинг гри, фільму, серіалу чи аніме в базах RAWG та TMDB.",
-          parameters: {
-            type: "object",
-            properties: {
-              query: { type: "string", description: "Назва для пошуку" },
-              category: { type: "string", enum: ["game", "movie"], description: "Категорія: game або movie" }
-            },
-            required: ["query", "category"]
-          }
+    const toolsDeclaration = [{
+      type: "function",
+      function: {
+        name: "searchCatalogInfo",
+        description: "Шукає сюжет, тривалість та рейтинг у базах RAWG та TMDB.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Назва АНГЛІЙСЬКОЮ мовою (English title)" },
+            category: { type: "string", enum: ["game", "movie"] }
+          },
+          required: ["query", "category"]
         }
-      }];
+      }
+    }];
 
-      // КАСКАДНА СИСТЕМА: Першою йде знайдена тобою крута Qwen, резервом — стабільна Llama 3
-      const modelsToTry = ['qwen/qwen3.8-27b', 'llama3-70b-8192'];
+    // Нові production-моделі за твоєю вимогою
+    const modelsToTry = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile'];
+    let finalReply = '';
 
-      for (const modelName of modelsToTry) {
-        try {
-          const firstResponse = await axios.post(
+    for (const modelName of modelsToTry) {
+      try {
+        // Даємо кожній моделі свіжу копію повідомлень
+        const currentMessages = [...messagesArray];
+
+        const response = await axios.post(
+          'https://api.groq.com/openai/v1/chat/completions',
+          {
+            model: modelName,
+            messages: currentMessages,
+            tools: toolsDeclaration,
+            temperature: 0.7,
+            max_tokens: 1200
+          },
+          { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 30000 }
+        );
+
+        const msg = response.data?.choices?.[0]?.message;
+        if (!msg) continue;
+
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          const toolCall = msg.tool_calls[0];
+          const args = JSON.parse(toolCall.function.arguments);
+          
+          // Виклик бази даних із перекладеним запитом
+          const catalogData = await fetchExternalCatalogInfo(args.query || prompt, args.category || (isCinema ? 'movie' : 'game'));
+
+          currentMessages.push(msg);
+          currentMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            name: toolCall.function.name,
+            content: catalogData || 'Інформацію не знайдено.'
+          });
+
+          const secondResponse = await axios.post(
             'https://api.groq.com/openai/v1/chat/completions',
             {
               model: modelName,
-              messages: messagesArray,
-              tools: toolsDeclaration,
+              messages: currentMessages,
               temperature: 0.7,
-              max_tokens: 1024
+              max_tokens: 1200
             },
-            { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+            { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 30000 }
           );
 
-          const msg = firstResponse.data.choices[0].message;
-
-          if (msg.tool_calls && msg.tool_calls.length > 0) {
-            const toolCall = msg.tool_calls[0];
-            const args = JSON.parse(toolCall.function.arguments);
-            const catalogData = await fetchExternalCatalogInfo(args.query || prompt, args.category || (isCinema ? 'movie' : 'game'));
-
-            messagesArray.push(msg);
-            messagesArray.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              name: toolCall.function.name,
-              content: catalogData
-            });
-
-            const secondResponse = await axios.post(
-              'https://api.groq.com/openai/v1/chat/completions',
-              {
-                model: modelName,
-                messages: messagesArray,
-                temperature: 0.7,
-                max_tokens: 1024
-              },
-              { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
-            );
-
-            successReply = secondResponse.data.choices[0].message.content.trim();
-          } else {
-            successReply = msg.content.trim();
-          }
-          
-          if (successReply) break; 
-          
-        } catch (apiErr) {
-          apiErrorMessage = apiErr.response?.data?.error?.message || apiErr.message;
-          console.error(`Модель Groq ${modelName} впала:`, apiErrorMessage);
+          // Захист від порожньої відповіді
+          finalReply = (secondResponse.data?.choices?.[0]?.message?.content || '').trim();
+        } else {
+          finalReply = (msg.content || '').trim();
         }
+
+        if (finalReply) {
+          finalReply = finalReply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          return res.json({ reply: finalReply });
+        }
+
+      } catch (apiErr) {
+        // Логуємо помилку кожної моделі окремо і йдемо до наступної
+        console.error(`Модель ${modelName} повернула помилку:`, apiErr.response?.data?.error?.message || apiErr.message);
       }
-
-      if (successReply) {
-        return res.json({ reply: successReply });
-      }
-    } else {
-      apiErrorMessage = 'Ключ GROQ_API_KEY не знайдено у файлі .env';
     }
 
-    const lowerPrompt = (prompt || '').toLowerCase();
-    const asksAboutMovie = lowerPrompt.includes('фільм') || lowerPrompt.includes('серіал') || lowerPrompt.includes('аніме') || lowerPrompt.includes('кіно');
-    const asksAboutGame = lowerPrompt.includes('гра') || lowerPrompt.includes('ігр') || lowerPrompt.includes('пограти');
-
-    if (isCinema && asksAboutGame) {
-      return res.json({ reply: "Я розбираюся тільки в кіно! Для ігор перейди у вкладку 'ШІ-Порадник Ігор'." });
-    }
-    if (!isCinema && asksAboutMovie) {
-      return res.json({ reply: "Я спеціалізуюся тільки на іграх! Щодо фільмів переходь у вкладку 'ШІ-Кінопорадник'." });
-    }
-
-    const rawBacklog = items.filter(i => i.status === 'backlog');
-    const rawFavorites = items.filter(i => Number(i.personalRating) >= 8).sort((a, b) => Number(b.personalRating) - Number(a.personalRating));
-    let localReply = '';
-
-    if (lowerPrompt.includes('про що') || lowerPrompt.includes('сюжет') || lowerPrompt.includes('розкажи про')) {
-      const cleanedQuery = prompt.replace(/про що (гра|фільм|серіал|аніме)?|сюжет|розкажи про/gi, '').trim();
-      const info = await fetchExternalCatalogInfo(cleanedQuery || prompt, isCinema ? 'movie' : 'game');
-      localReply = `*(Увага: Швидке API тимчасово недоступне. Виводжу сирі дані з каталогу)*\n\n${info}`;
-    } else if (lowerPrompt.includes('смак') || lowerPrompt.includes('аналіз') || lowerPrompt.includes('проаналізуй')) {
-      const topThree = items.slice(0, 3).map(i => `**${i.title}** (${i.playtime || 0} год)`).join(', ');
-      const favString = rawFavorites.length > 0
-        ? `Твої найвище оцінені фаворити — ${rawFavorites.slice(0, 3).map(i => `**${i.title}** (${i.personalRating}/10)`).join(', ')}.`
-        : 'Ти ще не встиг виставити багато високих оцінок!';
-      localReply = `У твоєму ${isCinema ? 'кіновсесвіті' : 'ігровому профілі'} зараз **${items.length}** тайтлів та солідні **${totalHours} год**. Найбільше часу ти провів у ${topThree || 'своїх улюблених проєктах'}. ${favString}`;
-    } else if (rawBacklog.length > 0 && (lowerPrompt.includes('пограти') || lowerPrompt.includes('подивитись') || lowerPrompt.includes('порадь'))) {
-      const pick = rawBacklog[Math.floor(Math.random() * Math.min(rawBacklog.length, 8))];
-      localReply = `Заглянув у твій беклог і раджу сьогодні ввечері увірватися в **${pick.title}**${pick.releaseYear ? ` (${pick.releaseYear})` : ''}! Це чудовий варіант для твоєї колекції.`;
-    } else {
-      localReply = `У твоїй колекції зараз **${items.length}** тайтлів. Запитай мене про твій смак, беклог або сюжет будь-якого тайтлу!`;
-    }
-
+    // Якщо впали всі моделі, віддаємо адекватну відповідь без технічного сміття
     return res.json({
-      reply: `${localReply}\n\n*(Технічна інформація: API Groq недоступне. Помилка: ${apiErrorMessage})*`
+      reply: 'Вибач, мої нейронні мережі зараз перевантажені або недоступні. Давай спробуємо ще раз через хвилинку!'
     });
 
   } catch (err) {
