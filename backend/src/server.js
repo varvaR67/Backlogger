@@ -6,6 +6,8 @@ const cors = require('cors');
 
 const User = require('./models/User');
 const Item = require('./models/Item');
+const Playlist = require('./models/Playlist');
+const Discussion = require('./models/Discussion');
 const { createRateLimiter } = require('./middlewares/rateLimit');
 const authRoutes = require('./routes/authRoutes');
 const itemRoutes = require('./routes/itemRoutes');
@@ -60,6 +62,9 @@ app.use((err, req, res, next) => {
   if (err?.type === 'entity.parse.failed') {
     return res.status(400).json({ message: 'Невалідний JSON' });
   }
+  if (err?.name === 'CastError') {
+    return res.status(400).json({ message: 'Невалідний ідентифікатор' });
+  }
   if (err?.isCors || err?.message === 'Not allowed by CORS') {
     return res.status(403).json({ message: 'Доступ заборонено політикою CORS' });
   }
@@ -73,7 +78,12 @@ mongoose
   .connect(process.env.MONGO_URI)
   .then(async () => {
     console.log('MongoDB успішно підключено');
-    await Promise.all([User.syncIndexes(), Item.syncIndexes()]);
+    await Promise.all([
+      User.syncIndexes(),
+      Item.syncIndexes(),
+      Playlist.syncIndexes(),
+      Discussion.syncIndexes()
+    ]);
     app.listen(PORT, () => {
       console.log(`Сервер запущено на порту ${PORT}`);
     });

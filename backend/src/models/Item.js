@@ -83,12 +83,16 @@ const itemSchema = new mongoose.Schema({
   },
   rawgId: {
     type: String,
-    default: null
+    default: null,
+    index: true
   },
   likes: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }]
 }, { timestamps: true });
+
+itemSchema.index({ user: 1, mediaType: 1 });
+itemSchema.index({ user: 1, status: 1 });
 
 module.exports = mongoose.model('Item', itemSchema);

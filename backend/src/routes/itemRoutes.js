@@ -1,51 +1,17 @@
 // backend/src/routes/itemRoutes.js
 const express = require('express');
 const router = express.Router();
-const mongoose = require('mongoose');
 const axios = require('axios');
-const Item = require('../models/Item');
-const User = require('../models/User');
 const auth = require('../middlewares/auth');
+const validateObjectId = require('../middlewares/validateObjectId');
 const { createRateLimiter } = require('../middlewares/rateLimit');
-
-const playlistSchema = new mongoose.Schema({
-  title: { type: String, required: true, trim: true, maxlength: 120 },
-  desc: { type: String, default: '', trim: true, maxlength: 500 },
-  theme: { type: String, default: 'indigo' },
-  category: { type: String, enum: ['games', 'movies'], default: 'games' },
-  games: [{
-    title: String,
-    imageUrl: String,
-    releaseYear: Number,
-    metacritic: Number,
-    genres: [String],
-    mediaType: String,
-    runtimeMinutes: Number
-  }],
-  likes: { type: [String], default: [] },
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
-}, { timestamps: true });
-
-playlistSchema.index({ createdAt: -1 });
-const Playlist = mongoose.models.Playlist || mongoose.model('Playlist', playlistSchema);
-
-const discussionSchema = new mongoose.Schema({
-  title: { type: String, required: true, trim: true, maxlength: 150 },
-  body: { type: String, required: true, trim: true, maxlength: 2000 },
-  tag: { type: String, default: 'Обговорення' },
-  category: { type: String, enum: ['movies', 'games'], default: 'movies' },
-  likes: { type: [String], default: [] },
-  replies: [{
-    username: String,
-    avatar: String,
-    text: { type: String, maxlength: 1000 },
-    createdAt: { type: Date, default: Date.now }
-  }],
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
-}, { timestamps: true });
-
-discussionSchema.index({ createdAt: -1 });
-const Discussion = mongoose.models.Discussion || mongoose.model('Discussion', discussionSchema);
+const { calculateUserXpFromItems, calculateXpFromStats } = require('../utils/xp');
+const {
+  userRepository,
+  itemRepository,
+  playlistRepository,
+  discussionRepository
+} = require('../repositories');
 
 const getUserId = (req) => req.user?.id || req.user?._id || req.user?.userId;
 const normalizeTitle = (str) => (typeof str === 'string' ? str.toLowerCase().replace(/[^a-z0-9а-яіїєґ]/gi, '') : '');
@@ -81,7 +47,7 @@ function isValidAvatarValue(val) {
 const ALLOWED_ITEM_FIELDS = [
   'title', 'mediaType', 'imageUrl', 'releaseYear', 'metacritic', 'genres',
   'status', 'personalRating', 'playtime', 'runtimeMinutes',
-  'currentSeason', 'currentEpisode', 'totalEpisodes', 'comment', 'steamAppId'
+  'currentSeason', 'currentEpisode', 'totalEpisodes', 'comment', 'steamAppId', 'rawgId'
 ];
 
 const sanitizeItemPayload = (body = {}) => {
@@ -95,40 +61,8 @@ const sanitizeItemPayload = (body = {}) => {
 };
 
 async function calculateUserXpStats(userId) {
-  const items = await Item.find({ user: userId, status: { $ne: 'wishlist' } })
-    .select('status personalRating comment likes playtime')
-    .lean();
-
-  let totalGames = 0;
-  let completedGames = 0;
-  let ratedCount = 0;
-  let commentedCount = 0;
-  let totalLikesReceived = 0;
-  let rawHours = 0;
-
-  for (const item of items) {
-    totalGames += 1;
-    if (item.status === 'completed') completedGames += 1;
-    if (item.personalRating != null && Number(item.personalRating) > 0) ratedCount += 1;
-    if (typeof item.comment === 'string' && item.comment.trim().length > 0) commentedCount += 1;
-    if (Array.isArray(item.likes)) totalLikesReceived += item.likes.length;
-    rawHours += Number(item.playtime) || 0;
-  }
-
-  const totalHours = Math.round(rawHours * 10) / 10;
-  const xp =
-    totalGames * 40 +
-    completedGames * 120 +
-    ratedCount * 30 +
-    commentedCount * 25 +
-    totalLikesReceived * 15 +
-    Math.round(totalHours * 5);
-
-  const level = Math.floor(xp / 200) + 1;
-  const currentLevelXp = xp % 200;
-  const xpProgress = Math.round((currentLevelXp / 200) * 100);
-
-  return { xp, level, currentLevelXp, xpProgress };
+  const items = await itemRepository.findForXp(userId);
+  return calculateUserXpFromItems(items);
 }
 
 const aiRateLimiter = createRateLimiter({
@@ -144,7 +78,7 @@ let cachedTop100Time = 0;
 router.get('/profile', auth, async (req, res) => {
   try {
     const userId = getUserId(req);
-    const user = await User.findById(userId).select('-password').lean();
+    const user = await userRepository.findById(userId);
     if (!user) return res.status(404).json({ message: 'Користувача не знайдено' });
 
     const xpStats = await calculateUserXpStats(userId);
@@ -180,12 +114,7 @@ router.put('/profile', auth, async (req, res) => {
       updateData.favoriteGameId = favoriteGameId.trim();
     }
 
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { $set: updateData },
-      { returnDocument: 'after', runValidators: true }
-    ).select('-password').lean();
-
+    const updatedUser = await userRepository.updateById(userId, { $set: updateData });
     if (!updatedUser) return res.status(404).json({ message: 'Користувача не знайдено' });
 
     const xpStats = await calculateUserXpStats(userId);
@@ -198,52 +127,15 @@ router.put('/profile', auth, async (req, res) => {
 
 router.get('/leaderboard', auth, async (req, res) => {
   try {
-    const statsByUser = await Item.aggregate([
-      { $match: { status: { $ne: 'wishlist' } } },
-      {
-        $project: {
-          user: 1,
-          isCompleted: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] },
-          isRated: { $cond: [{ $gt: ['$personalRating', null] }, 1, 0] },
-          isCommented: {
-            $cond: [
-              { $gt: [{ $strLenCP: { $trim: { input: { $ifNull: ['$comment', ''] } } } }, 0] },
-              1,
-              0
-            ]
-          },
-          likesCount: { $size: { $ifNull: ['$likes', []] } },
-          playtime: { $ifNull: ['$playtime', 0] }
-        }
-      },
-      {
-        $group: {
-          _id: '$user',
-          totalGames: { $sum: 1 },
-          completedGames: { $sum: '$isCompleted' },
-          ratedCount: { $sum: '$isRated' },
-          commentedCount: { $sum: '$isCommented' },
-          totalLikesReceived: { $sum: '$likesCount' },
-          totalHours: { $sum: '$playtime' }
-        }
-      }
-    ]);
-
+    const statsByUser = await itemRepository.getLeaderboardStats();
     const statsMap = new Map(statsByUser.map(s => [String(s._id), s]));
-    const users = await User.find().select('username avatar customTitle accentColor steamSynced').lean();
+    const users = await userRepository.findAll();
 
     const leaderboard = users.map(u => {
       const s = statsMap.get(String(u._id)) || {
         totalGames: 0, completedGames: 0, ratedCount: 0, commentedCount: 0, totalLikesReceived: 0, totalHours: 0
       };
-      const totalHours = Math.round((Number(s.totalHours) || 0) * 10) / 10;
-      const xp =
-        (s.totalGames * 40) +
-        (s.completedGames * 120) +
-        (s.ratedCount * 30) +
-        (s.commentedCount * 25) +
-        (s.totalLikesReceived * 15) +
-        Math.round(totalHours * 5);
+      const xpData = calculateXpFromStats(s);
 
       return {
         _id: u._id,
@@ -252,11 +144,11 @@ router.get('/leaderboard', auth, async (req, res) => {
         customTitle: u.customTitle || 'Дослідник всесвітів',
         accentColor: u.accentColor || 'indigo',
         steamSynced: Boolean(u.steamSynced),
-        totalGames: s.totalGames,
-        completedGames: s.completedGames,
-        totalHours,
-        xp,
-        level: Math.floor(xp / 200) + 1
+        totalGames: xpData.totalGames,
+        completedGames: xpData.completedGames,
+        totalHours: xpData.totalHours,
+        xp: xpData.xp,
+        level: xpData.level
       };
     });
 
@@ -270,26 +162,18 @@ router.get('/leaderboard', auth, async (req, res) => {
 
 router.get('/feed', auth, async (req, res) => {
   try {
-    const feed = await Item.find({
-      $or: [{ comment: { $exists: true, $ne: '' } }, { personalRating: { $ne: null } }]
-    }).sort({ updatedAt: -1 }).limit(40).populate('user', 'username avatar accentColor customTitle').lean();
-    res.json(feed.filter(item => item.user != null));
+    const feed = await itemRepository.getFeed(40);
+    res.json(feed);
   } catch (err) {
     console.error('GET /feed error:', err);
     res.status(500).json({ message: 'Помилка стрічки' });
   }
 });
 
-router.post('/:id/like', auth, async (req, res) => {
+router.post('/:id/like', auth, validateObjectId, async (req, res) => {
   try {
     const userId = String(getUserId(req));
-    const exists = await Item.exists({ _id: req.params.id, likes: userId });
-    const updateOp = exists ? { $pull: { likes: userId } } : { $addToSet: { likes: userId } };
-
-    const populated = await Item.findByIdAndUpdate(req.params.id, updateOp, { returnDocument: 'after' })
-      .populate('user', 'username avatar accentColor customTitle')
-      .lean();
-
+    const populated = await itemRepository.toggleLike(req.params.id, userId);
     if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
   } catch (err) {
@@ -345,7 +229,7 @@ router.get('/top-100-movies', auth, async (req, res) => {
 
 router.get('/discussions', auth, async (req, res) => {
   try {
-    const list = await Discussion.find().sort({ createdAt: -1 }).limit(30).populate('user', 'username avatar accentColor').lean();
+    const list = await discussionRepository.findAll({}, 30);
     res.json(list);
   } catch (err) {
     console.error('GET /discussions error:', err);
@@ -359,15 +243,13 @@ router.post('/discussions', auth, async (req, res) => {
     if (typeof title !== 'string' || typeof body !== 'string' || !title.trim() || !body.trim()) {
       return res.status(400).json({ message: 'Заповни тему та текст' });
     }
-    const disc = new Discussion({
+    const populated = await discussionRepository.create({
       title: title.trim().slice(0, 150),
       body: body.trim().slice(0, 2000),
       tag: typeof tag === 'string' ? tag.trim().slice(0, 40) : 'Обговорення',
       category: category === 'games' ? 'games' : 'movies',
       user: getUserId(req)
     });
-    await disc.save();
-    const populated = await Discussion.findById(disc._id).populate('user', 'username avatar accentColor').lean();
     res.status(201).json(populated);
   } catch (err) {
     console.error('POST /discussions error:', err);
@@ -375,16 +257,19 @@ router.post('/discussions', auth, async (req, res) => {
   }
 });
 
-router.post('/discussions/:id/reply', auth, async (req, res) => {
+router.post('/discussions/:id/reply', auth, validateObjectId, async (req, res) => {
   try {
     const { text } = req.body || {};
     if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ message: 'Введи відповідь' });
-    const user = await User.findById(getUserId(req)).lean();
-    const populated = await Discussion.findByIdAndUpdate(
+    const user = await userRepository.findById(getUserId(req));
+    const populated = await discussionRepository.addReply(
       req.params.id,
-      { $push: { replies: { username: user?.username || 'Геймер', avatar: user?.avatar || 'cyber', text: text.trim().slice(0, 1000) } } },
-      { returnDocument: 'after' }
-    ).populate('user', 'username avatar accentColor').lean();
+      {
+        username: user?.username || 'Геймер',
+        avatar: user?.avatar || 'cyber',
+        text: text.trim().slice(0, 1000)
+      }
+    );
     if (!populated) return res.status(404).json({ message: 'Тему не знайдено' });
     res.json(populated);
   } catch (err) {
@@ -393,13 +278,10 @@ router.post('/discussions/:id/reply', auth, async (req, res) => {
   }
 });
 
-router.post('/discussions/:id/like', auth, async (req, res) => {
+router.post('/discussions/:id/like', auth, validateObjectId, async (req, res) => {
   try {
     const userId = String(getUserId(req));
-    const exists = await Discussion.exists({ _id: req.params.id, likes: userId });
-    const updateOp = exists ? { $pull: { likes: userId } } : { $addToSet: { likes: userId } };
-    const populated = await Discussion.findByIdAndUpdate(req.params.id, updateOp, { returnDocument: 'after' })
-      .populate('user', 'username avatar accentColor').lean();
+    const populated = await discussionRepository.toggleLike(req.params.id, userId);
     if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
   } catch (err) {
@@ -410,51 +292,9 @@ router.post('/discussions/:id/like', auth, async (req, res) => {
 
 router.get('/trending', auth, async (req, res) => {
   try {
-    const aggregateByMedia = async (isCinema) => {
-      const matchStage = isCinema
-        ? { status: { $ne: 'wishlist' }, mediaType: { $in: ['movie', 'series', 'anime'] } }
-        : { status: { $ne: 'wishlist' }, $or: [{ mediaType: 'game' }, { mediaType: { $exists: false } }] };
-
-      const rows = await Item.aggregate([
-        { $match: matchStage },
-        {
-          $group: {
-            _id: { $toLower: { $trim: { input: '$title' } } },
-            rawgId: { $first: '$_id' },
-            title: { $first: '$title' },
-            mediaType: { $first: { $ifNull: ['$mediaType', 'game'] } },
-            imageUrl: { $first: '$imageUrl' },
-            releaseYear: { $first: '$releaseYear' },
-            metacritic: { $first: '$metacritic' },
-            genres: { $first: '$genres' },
-            playersCount: { $sum: 1 },
-            playingNowCount: { $sum: { $cond: [{ $eq: ['$status', 'playing'] }, 1, 0] } },
-            totalHours: { $sum: { $ifNull: ['$playtime', 0] } },
-            avgRating: { $avg: '$personalRating' }
-          }
-        },
-        { $sort: { playersCount: -1, totalHours: -1 } },
-        { $limit: 6 }
-      ]);
-
-      return rows.map(r => ({
-        rawgId: r.rawgId,
-        title: r.title,
-        mediaType: r.mediaType,
-        imageUrl: r.imageUrl,
-        releaseYear: r.releaseYear,
-        metacritic: r.metacritic,
-        genres: r.genres || [],
-        playersCount: r.playersCount,
-        playingNowCount: r.playingNowCount,
-        totalHours: Math.round((r.totalHours || 0) * 10) / 10,
-        avgCommunityRating: r.avgRating ? Number(r.avgRating).toFixed(1) : null
-      }));
-    };
-
     const [communityHits, cinemaHits] = await Promise.all([
-      aggregateByMedia(false),
-      aggregateByMedia(true)
+      itemRepository.getTrending(false),
+      itemRepository.getTrending(true)
     ]);
 
     const newReleases = [
@@ -475,7 +315,7 @@ router.get('/trending', auth, async (req, res) => {
 
 router.get('/playlists', auth, async (req, res) => {
   try {
-    const customPlaylists = await Playlist.find().sort({ createdAt: -1 }).populate('user', 'username avatar accentColor').lean();
+    const customPlaylists = await playlistRepository.findAll();
     res.json(customPlaylists);
   } catch (err) {
     console.error('GET /playlists error:', err);
@@ -489,7 +329,7 @@ router.post('/playlists', auth, async (req, res) => {
     if (typeof title !== 'string' || !title.trim() || !Array.isArray(games) || games.length === 0) {
       return res.status(400).json({ message: 'Додай назву та тайтли' });
     }
-    const newPlaylist = new Playlist({
+    const populated = await playlistRepository.create({
       title: title.trim().slice(0, 120),
       desc: typeof desc === 'string' ? desc.trim().slice(0, 500) : '',
       theme: typeof theme === 'string' ? theme : 'indigo',
@@ -497,8 +337,6 @@ router.post('/playlists', auth, async (req, res) => {
       games: games.slice(0, 12),
       user: getUserId(req)
     });
-    await newPlaylist.save();
-    const populated = await Playlist.findById(newPlaylist._id).populate('user', 'username avatar accentColor').lean();
     res.status(201).json(populated);
   } catch (err) {
     console.error('POST /playlists error:', err);
@@ -506,13 +344,10 @@ router.post('/playlists', auth, async (req, res) => {
   }
 });
 
-router.post('/playlists/:id/like', auth, async (req, res) => {
+router.post('/playlists/:id/like', auth, validateObjectId, async (req, res) => {
   try {
     const userId = String(getUserId(req));
-    const exists = await Playlist.exists({ _id: req.params.id, likes: userId });
-    const updateOp = exists ? { $pull: { likes: userId } } : { $addToSet: { likes: userId } };
-    const populated = await Playlist.findByIdAndUpdate(req.params.id, updateOp, { returnDocument: 'after' })
-      .populate('user', 'username avatar accentColor').lean();
+    const populated = await playlistRepository.toggleLike(req.params.id, userId);
     if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
   } catch (err) {
@@ -521,9 +356,9 @@ router.post('/playlists/:id/like', auth, async (req, res) => {
   }
 });
 
-router.delete('/playlists/:id', auth, async (req, res) => {
+router.delete('/playlists/:id', auth, validateObjectId, async (req, res) => {
   try {
-    await Playlist.findOneAndDelete({ _id: req.params.id, user: getUserId(req) });
+    await playlistRepository.deleteUserPlaylist(req.params.id, getUserId(req));
     res.json({ message: 'Видалено' });
   } catch (err) {
     console.error('DELETE /playlists/:id error:', err);
@@ -722,11 +557,7 @@ router.get('/search-media', auth, async (req, res) => {
 
 router.post('/steam-unlink', auth, async (req, res) => {
   try {
-    const updatedUser = await User.findByIdAndUpdate(
-      getUserId(req),
-      { steamSynced: false, steamId: '' },
-      { returnDocument: 'after' }
-    ).select('-password');
+    const updatedUser = await userRepository.updateSteamSync(getUserId(req), false, '');
     res.json({ message: "Steam від'єднано", userProfile: updatedUser });
   } catch (err) {
     console.error('POST /steam-unlink error:', err);
@@ -737,7 +568,7 @@ router.post('/steam-unlink', auth, async (req, res) => {
 router.get('/steam-live', auth, async (req, res) => {
   try {
     const userId = getUserId(req);
-    const user = await User.findById(userId).lean();
+    const user = await userRepository.findById(userId);
     if (!user || !user.steamSynced || !user.steamId || !process.env.STEAM_API_KEY) {
       return res.json({ synced: false, inGame: false });
     }
@@ -750,7 +581,7 @@ router.get('/steam-live', auth, async (req, res) => {
     const gameTitle = player?.gameextrainfo || null;
     let matchedItemId = null;
 
-    const userItems = await Item.find({ user: userId }).lean();
+    const userItems = await itemRepository.findByUser(userId);
 
     try {
       const recentRes = await axios.get(
@@ -782,11 +613,11 @@ router.get('/steam-live', auth, async (req, res) => {
       }
 
       if (bulkOps.length > 0) {
-        await Item.bulkWrite(bulkOps);
+        await itemRepository.bulkWrite(bulkOps);
       }
     } catch (e) {}
 
-    const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 }).lean();
+    const updatedItems = await itemRepository.findByUser(userId, { sort: { playtime: -1, createdAt: -1 } });
     if (inGame && gameTitle) {
       const normLive = normalizeTitle(gameTitle);
       if (normLive.length > 0) {
@@ -834,7 +665,7 @@ router.post('/steam-sync', auth, async (req, res) => {
     if (!steamGames) return res.status(400).json({ message: 'Профіль прихований' });
 
     const userId = getUserId(req);
-    const userItems = await Item.find({ user: userId }).lean();
+    const userItems = await itemRepository.findByUser(userId);
     let syncedCount = 0;
     let importedCount = 0;
     const bulkOps = [];
@@ -886,15 +717,11 @@ router.post('/steam-sync', auth, async (req, res) => {
     }
 
     if (bulkOps.length > 0) {
-      await Item.bulkWrite(bulkOps);
+      await itemRepository.bulkWrite(bulkOps);
     }
 
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { steamSynced: true, steamId },
-      { returnDocument: 'after' }
-    ).select('-password');
-    const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 }).lean();
+    const updatedUser = await userRepository.updateSteamSync(userId, true, steamId);
+    const updatedItems = await itemRepository.findByUser(userId, { sort: { playtime: -1, createdAt: -1 } });
     res.json({ items: updatedItems, syncedCount, importedCount, userProfile: updatedUser });
   } catch (err) {
     console.error('POST /steam-sync error:', err);
@@ -963,7 +790,7 @@ router.post('/ai-assistant', auth, aiRateLimiter, async (req, res) => {
     const isCinema = mode === 'movies';
     const userId = getUserId(req);
 
-    const allUserItems = await Item.find({ user: userId }).sort({ playtime: -1 }).lean();
+    const allUserItems = await itemRepository.findByUser(userId, { sort: { playtime: -1 } });
     const items = allUserItems.filter(i => {
       const type = i.mediaType || 'game';
       const isMedia = type === 'movie' || type === 'series' || type === 'anime';
@@ -1134,7 +961,7 @@ router.post('/ai-assistant', auth, aiRateLimiter, async (req, res) => {
 
 router.get('/', auth, async (req, res) => {
   try {
-    const items = await Item.find({ user: getUserId(req) }).sort({ playtime: -1, createdAt: -1 }).lean();
+    const items = await itemRepository.findByUser(getUserId(req), { sort: { playtime: -1, createdAt: -1 } });
     res.json(items);
   } catch (err) {
     console.error('GET /items error:', err);
@@ -1145,7 +972,7 @@ router.get('/', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   try {
     const userId = getUserId(req);
-    const currentCount = await Item.countDocuments({ user: userId });
+    const currentCount = await itemRepository.countByUser(userId);
     if (currentCount >= 3000) {
       return res.status(400).json({ message: 'Досягнуто ліміт колекції (максимум 3000 тайтлів)' });
     }
@@ -1163,7 +990,7 @@ router.post('/', auth, async (req, res) => {
     cleanData.mediaType = mediaType;
 
     const normNew = normalizeTitle(titleStr);
-    const existingItems = await Item.find({ user: userId, mediaType }).select('title').lean();
+    const existingItems = await itemRepository.findTitlesByUserAndMediaType(userId, mediaType);
     const isDuplicate = existingItems.some(i => {
       const normExisting = normalizeTitle(i.title);
       if (normNew.length > 0 && normExisting.length > 0) {
@@ -1176,8 +1003,7 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ message: 'Цей тайтл вже є у твоєму списку!' });
     }
 
-    const item = new Item({ ...cleanData, user: userId });
-    const newItem = await item.save();
+    const newItem = await itemRepository.create({ ...cleanData, user: userId });
     res.status(201).json(newItem);
   } catch (err) {
     console.error('POST /items error:', err);
@@ -1185,13 +1011,13 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-router.put('/:id', auth, async (req, res) => {
+router.put('/:id', auth, validateObjectId, async (req, res) => {
   try {
     const cleanData = sanitizeItemPayload(req.body);
-    const updatedItem = await Item.findOneAndUpdate(
-      { _id: req.params.id, user: getUserId(req) },
-      { $set: cleanData },
-      { returnDocument: 'after', runValidators: true }
+    const updatedItem = await itemRepository.updateUserItem(
+      req.params.id,
+      getUserId(req),
+      cleanData
     );
     if (!updatedItem) return res.status(404).json({ message: 'Тайтл не знайдено' });
     res.json(updatedItem);
@@ -1201,9 +1027,9 @@ router.put('/:id', auth, async (req, res) => {
   }
 });
 
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', auth, validateObjectId, async (req, res) => {
   try {
-    await Item.findOneAndDelete({ _id: req.params.id, user: getUserId(req) });
+    await itemRepository.deleteUserItem(req.params.id, getUserId(req));
     res.json({ message: 'Видалено' });
   } catch (err) {
     console.error('DELETE /items/:id error:', err);

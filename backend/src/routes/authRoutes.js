@@ -3,10 +3,9 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { userRepository } = require('../repositories');
 
 const str = (v) => (typeof v === 'string' ? v.trim() : '');
-const USERNAME_COLLATION = { locale: 'en', strength: 2 };
 
 router.post('/register', async (req, res) => {
   try {
@@ -21,13 +20,12 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'Пароль має містити від 6 до 72 символів' });
     }
 
-    const existingUser = await User.findOne({ username }).collation(USERNAME_COLLATION);
+    const existingUser = await userRepository.findByUsername(username);
     if (existingUser) {
       return res.status(400).json({ message: 'Цей нікнейм вже зайнятий' });
     }
 
-    const newUser = new User({ username, password });
-    await newUser.save();
+    const newUser = await userRepository.create({ username, password });
 
     const token = jwt.sign(
       { id: newUser._id, username: newUser.username },
@@ -60,9 +58,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Неправильний нікнейм або пароль' });
     }
 
-    const user = await User.findOne({ username })
-      .collation(USERNAME_COLLATION)
-      .select('+password');
+    const user = await userRepository.findByUsernameWithPassword(username);
 
     if (!user) {
       return res.status(401).json({ message: 'Неправильний нікнейм або пароль' });
