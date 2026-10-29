@@ -1,88 +1,84 @@
+// backend/src/server.js
 require('dotenv').config();
-const dns = require('dns');
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 
-// Використовуємо публічні DNS лише локально за потреби, не ламаючи маршрутизацію в хмарі
-if (process.env.USE_CUSTOM_DNS === 'true') {
-  dns.setServers(['8.8.8.8', '1.1.1.1']);
-}
-
+const User = require('./models/User');
+const Item = require('./models/Item');
+const { createRateLimiter } = require('./middlewares/rateLimit');
 const authRoutes = require('./routes/authRoutes');
 const itemRoutes = require('./routes/itemRoutes');
 
+if ((process.env.JWT_SECRET || '').length < 32) {
+  throw new Error('Слабкий JWT_SECRET: мінімальна довжина ключа має становити 32 символи');
+}
+
 const app = express();
 
-// Дозволяємо запити лише з вказаного клієнтського домену та локальних портів розробки
-const allowedOrigins = [
-  process.env.CLIENT_URL,
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:3000'
-].filter(Boolean);
+app.disable('x-powered-by');
+app.set('trust proxy', Number(process.env.TRUST_PROXY || 0));
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error('Доступ заблоковано політикою CORS'));
-  },
-  credentials: true
-}));
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
 
-// Обмежуємо розмір тіла запиту до 1 мегабайта для захисту пам'яті сервера
-app.use(express.json({ limit: '1mb' }));
-
-// Вбудований Rate Limiter для захисту від DDoS та брутфорсу паролів
-const createRateLimiter = (windowMs, maxRequests, message) => {
-  const requests = new Map();
-
-  setInterval(() => {
-    const now = Date.now();
-    for (const [ip, data] of requests.entries()) {
-      if (now - data.startTime > windowMs) {
-        requests.delete(ip);
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
       }
-    }
-  }, windowMs).unref();
+      const corsErr = new Error('Not allowed by CORS');
+      corsErr.isCors = true;
+      return callback(corsErr);
+    },
+    credentials: true
+  })
+);
 
-  return (req, res, next) => {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
-    const now = Date.now();
-    const record = requests.get(ip);
+app.use(express.json({ limit: '100kb' }));
 
-    if (!record || now - record.startTime > windowMs) {
-      requests.set(ip, { count: 1, startTime: now });
-      return next();
-    }
+const globalLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 120,
+  message: 'Забагато запитів з вашої адреси, зачекайте хвилину.'
+});
 
-    record.count += 1;
-    if (record.count > maxRequests) {
-      return res.status(429).json({ message });
-    }
+const authLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: 'Забагато спроб входу або реєстрації, спробуйте пізніше.'
+});
 
-    next();
-  };
-};
-
-const authLimiter = createRateLimiter(15 * 60 * 1000, 30, 'Забагато спроб входу. Спробуй пізніше через 15 хвилин.');
-const apiLimiter = createRateLimiter(60 * 1000, 120, 'Забагато запитів до сервера. Зачекай хвилину.');
-
+app.use('/api', globalLimiter);
 app.use('/api/auth', authLimiter, authRoutes);
-app.use('/api/items', apiLimiter, itemRoutes);
+app.use('/api/items', itemRoutes);
+
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.parse.failed') {
+    return res.status(400).json({ message: 'Невалідний JSON' });
+  }
+  if (err?.isCors || err?.message === 'Not allowed by CORS') {
+    return res.status(403).json({ message: 'Доступ заборонено політикою CORS' });
+  }
+  console.error('Unhandled server error:', err);
+  return res.status(500).json({ message: 'Помилка сервера' });
+});
 
 const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
 
-mongoose.connect(MONGO_URI)
-  .then(() => {
-    console.log('Підключено до MongoDB');
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(async () => {
+    console.log('MongoDB успішно підключено');
+    await Promise.all([User.syncIndexes(), Item.syncIndexes()]);
     app.listen(PORT, () => {
-      console.log(`Сервер успішно запущено на порту ${PORT}`);
+      console.log(`Сервер запущено на порту ${PORT}`);
     });
   })
   .catch((err) => {
-    console.error('Помилка підключення до бази даних:', err.message);
+    console.error('Критична помилка підключення до MongoDB:', err);
+    process.exit(1);
   });

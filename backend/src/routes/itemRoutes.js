@@ -1,17 +1,27 @@
+// backend/src/routes/itemRoutes.js
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const axios = require('axios');
 const Item = require('../models/Item');
 const User = require('../models/User');
-const axios = require('axios');
 const auth = require('../middlewares/auth');
+const { createRateLimiter } = require('../middlewares/rateLimit');
 
 const playlistSchema = new mongoose.Schema({
-  title: { type: String, required: true, trim: true },
-  desc: { type: String, default: '', trim: true },
+  title: { type: String, required: true, trim: true, maxlength: 120 },
+  desc: { type: String, default: '', trim: true, maxlength: 500 },
   theme: { type: String, default: 'indigo' },
   category: { type: String, enum: ['games', 'movies'], default: 'games' },
-  games: [{ title: String, imageUrl: String, releaseYear: Number, metacritic: Number, genres: [String], mediaType: String, runtimeMinutes: Number }],
+  games: [{
+    title: String,
+    imageUrl: String,
+    releaseYear: Number,
+    metacritic: Number,
+    genres: [String],
+    mediaType: String,
+    runtimeMinutes: Number
+  }],
   likes: { type: [String], default: [] },
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
 }, { timestamps: true });
@@ -20,15 +30,15 @@ playlistSchema.index({ createdAt: -1 });
 const Playlist = mongoose.models.Playlist || mongoose.model('Playlist', playlistSchema);
 
 const discussionSchema = new mongoose.Schema({
-  title: { type: String, required: true, trim: true },
-  body: { type: String, required: true, trim: true },
+  title: { type: String, required: true, trim: true, maxlength: 150 },
+  body: { type: String, required: true, trim: true, maxlength: 2000 },
   tag: { type: String, default: 'Обговорення' },
   category: { type: String, enum: ['movies', 'games'], default: 'movies' },
   likes: { type: [String], default: [] },
   replies: [{
     username: String,
     avatar: String,
-    text: String,
+    text: { type: String, maxlength: 1000 },
     createdAt: { type: Date, default: Date.now }
   }],
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
@@ -38,7 +48,35 @@ discussionSchema.index({ createdAt: -1 });
 const Discussion = mongoose.models.Discussion || mongoose.model('Discussion', discussionSchema);
 
 const getUserId = (req) => req.user?.id || req.user?._id || req.user?.userId;
-const normalizeTitle = (str) => str ? str.toLowerCase().replace(/[^a-z0-9а-яіїєґ]/gi, '') : '';
+const normalizeTitle = (str) => (typeof str === 'string' ? str.toLowerCase().replace(/[^a-z0-9а-яіїєґ]/gi, '') : '');
+
+const ALLOWED_YEARS = /^(\d{4}|2015-2019|2010-2014|2000s|classic)$/;
+const ALLOWED_AVATAR_PRESETS = new Set(['cyber', 'ghost', 'rocket', 'crown', 'sword', 'shield']);
+const ALLOWED_AVATAR_DOMAINS = [
+  'steamstatic.com',
+  'akamaihd.net',
+  'gravatar.com',
+  'githubusercontent.com',
+  'imgur.com',
+  'discordapp.com',
+  'googleusercontent.com',
+  'tmdb.org',
+  'rawg.io'
+];
+
+function isValidAvatarValue(val) {
+  if (typeof val !== 'string') return false;
+  const trimmed = val.trim();
+  if (ALLOWED_AVATAR_PRESETS.has(trimmed)) return true;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return ALLOWED_AVATAR_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
 
 const ALLOWED_ITEM_FIELDS = [
   'title', 'mediaType', 'imageUrl', 'releaseYear', 'metacritic', 'genres',
@@ -56,27 +94,106 @@ const sanitizeItemPayload = (body = {}) => {
   return clean;
 };
 
+async function calculateUserXpStats(userId) {
+  const items = await Item.find({ user: userId, status: { $ne: 'wishlist' } })
+    .select('status personalRating comment likes playtime')
+    .lean();
+
+  let totalGames = 0;
+  let completedGames = 0;
+  let ratedCount = 0;
+  let commentedCount = 0;
+  let totalLikesReceived = 0;
+  let rawHours = 0;
+
+  for (const item of items) {
+    totalGames += 1;
+    if (item.status === 'completed') completedGames += 1;
+    if (item.personalRating != null && Number(item.personalRating) > 0) ratedCount += 1;
+    if (typeof item.comment === 'string' && item.comment.trim().length > 0) commentedCount += 1;
+    if (Array.isArray(item.likes)) totalLikesReceived += item.likes.length;
+    rawHours += Number(item.playtime) || 0;
+  }
+
+  const totalHours = Math.round(rawHours * 10) / 10;
+  const xp =
+    totalGames * 40 +
+    completedGames * 120 +
+    ratedCount * 30 +
+    commentedCount * 25 +
+    totalLikesReceived * 15 +
+    Math.round(totalHours * 5);
+
+  const level = Math.floor(xp / 200) + 1;
+  const currentLevelXp = xp % 200;
+  const xpProgress = Math.round((currentLevelXp / 200) * 100);
+
+  return { xp, level, currentLevelXp, xpProgress };
+}
+
+const aiRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: 'Забагато запитів до ШІ-помічника (максимум 10 на хвилину). Зачекай трохи!',
+  getKey: (req) => String(getUserId(req) || req.ip)
+});
+
 let cachedTop100Movies = null;
 let cachedTop100Time = 0;
 
 router.get('/profile', auth, async (req, res) => {
   try {
-    const user = await User.findById(getUserId(req)).select('-password');
+    const userId = getUserId(req);
+    const user = await User.findById(userId).select('-password').lean();
     if (!user) return res.status(404).json({ message: 'Користувача не знайдено' });
-    res.json(user);
-  } catch (err) { res.status(500).json({ message: err.message }); }
+
+    const xpStats = await calculateUserXpStats(userId);
+    res.json({ ...user, ...xpStats });
+  } catch (err) {
+    console.error('GET /profile error:', err);
+    res.status(500).json({ message: 'Помилка завантаження профілю' });
+  }
 });
 
 router.put('/profile', auth, async (req, res) => {
   try {
-    const { avatar, customTitle, accentColor, favoriteGameId } = req.body;
+    const userId = getUserId(req);
+    const { avatar, customTitle, accentColor, favoriteGameId } = req.body || {};
+
+    const updateData = {};
+    if (avatar !== undefined) {
+      const trimmedAvatar = String(avatar).trim();
+      if (!isValidAvatarValue(trimmedAvatar)) {
+        return res.status(400).json({
+          message: 'Дозволені лише стандартні аватарки або безпечні HTTPS-посилання (Steam, Gravatar, Imgur, GitHub)'
+        });
+      }
+      updateData.avatar = trimmedAvatar;
+    }
+    if (typeof customTitle === 'string') {
+      updateData.customTitle = customTitle.trim().slice(0, 32);
+    }
+    if (typeof accentColor === 'string') {
+      updateData.accentColor = accentColor.trim().slice(0, 20);
+    }
+    if (typeof favoriteGameId === 'string') {
+      updateData.favoriteGameId = favoriteGameId.trim();
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
-      getUserId(req),
-      { avatar, customTitle, accentColor, favoriteGameId },
-      { returnDocument: 'after' }
-    ).select('-password');
-    res.json(updatedUser);
-  } catch (err) { res.status(400).json({ message: err.message }); }
+      userId,
+      { $set: updateData },
+      { returnDocument: 'after', runValidators: true }
+    ).select('-password').lean();
+
+    if (!updatedUser) return res.status(404).json({ message: 'Користувача не знайдено' });
+
+    const xpStats = await calculateUserXpStats(userId);
+    res.json({ ...updatedUser, ...xpStats });
+  } catch (err) {
+    console.error('PUT /profile error:', err);
+    res.status(400).json({ message: 'Не вдалося оновити профіль' });
+  }
 });
 
 router.get('/leaderboard', auth, async (req, res) => {
@@ -120,12 +237,18 @@ router.get('/leaderboard', auth, async (req, res) => {
         totalGames: 0, completedGames: 0, ratedCount: 0, commentedCount: 0, totalLikesReceived: 0, totalHours: 0
       };
       const totalHours = Math.round((Number(s.totalHours) || 0) * 10) / 10;
-      const xp = (s.totalGames * 40) + (s.completedGames * 120) + (s.ratedCount * 30) + (s.commentedCount * 25) + (s.totalLikesReceived * 15) + Math.round(totalHours * 5);
+      const xp =
+        (s.totalGames * 40) +
+        (s.completedGames * 120) +
+        (s.ratedCount * 30) +
+        (s.commentedCount * 25) +
+        (s.totalLikesReceived * 15) +
+        Math.round(totalHours * 5);
 
       return {
         _id: u._id,
         username: u.username,
-        avatar: u.avatar || 'cyber',
+        avatar: isValidAvatarValue(u.avatar) ? u.avatar : 'cyber',
         customTitle: u.customTitle || 'Дослідник всесвітів',
         accentColor: u.accentColor || 'indigo',
         steamSynced: Boolean(u.steamSynced),
@@ -140,6 +263,7 @@ router.get('/leaderboard', auth, async (req, res) => {
     leaderboard.sort((a, b) => b.xp - a.xp);
     res.json(leaderboard.slice(0, 50));
   } catch (err) {
+    console.error('GET /leaderboard error:', err);
     res.status(500).json({ message: 'Помилка таблиці лідерів' });
   }
 });
@@ -150,7 +274,10 @@ router.get('/feed', auth, async (req, res) => {
       $or: [{ comment: { $exists: true, $ne: '' } }, { personalRating: { $ne: null } }]
     }).sort({ updatedAt: -1 }).limit(40).populate('user', 'username avatar accentColor customTitle').lean();
     res.json(feed.filter(item => item.user != null));
-  } catch (err) { res.status(500).json({ message: "Помилка стрічки" }); }
+  } catch (err) {
+    console.error('GET /feed error:', err);
+    res.status(500).json({ message: 'Помилка стрічки' });
+  }
 });
 
 router.post('/:id/like', auth, async (req, res) => {
@@ -165,7 +292,10 @@ router.post('/:id/like', auth, async (req, res) => {
 
     if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
-  } catch (err) { res.status(500).json({ message: 'Помилка лайку' }); }
+  } catch (err) {
+    console.error('POST /:id/like error:', err);
+    res.status(500).json({ message: 'Помилка лайку' });
+  }
 });
 
 router.get('/top-100-movies', auth, async (req, res) => {
@@ -208,6 +338,7 @@ router.get('/top-100-movies', auth, async (req, res) => {
     }
     res.json([]);
   } catch (err) {
+    console.error('GET /top-100-movies error:', err);
     res.status(500).json({ message: 'Помилка завантаження Топ-100 фільмів' });
   }
 });
@@ -216,33 +347,50 @@ router.get('/discussions', auth, async (req, res) => {
   try {
     const list = await Discussion.find().sort({ createdAt: -1 }).limit(30).populate('user', 'username avatar accentColor').lean();
     res.json(list);
-  } catch (err) { res.status(500).json({ message: 'Помилка завантаження обговорень' }); }
+  } catch (err) {
+    console.error('GET /discussions error:', err);
+    res.status(500).json({ message: 'Помилка завантаження обговорень' });
+  }
 });
 
 router.post('/discussions', auth, async (req, res) => {
   try {
-    const { title, body, tag, category } = req.body;
-    if (!title || !body) return res.status(400).json({ message: 'Заповни тему та текст' });
-    const disc = new Discussion({ title: title.trim(), body: body.trim(), tag: tag || 'Обговорення', category: category || 'movies', user: getUserId(req) });
+    const { title, body, tag, category } = req.body || {};
+    if (typeof title !== 'string' || typeof body !== 'string' || !title.trim() || !body.trim()) {
+      return res.status(400).json({ message: 'Заповни тему та текст' });
+    }
+    const disc = new Discussion({
+      title: title.trim().slice(0, 150),
+      body: body.trim().slice(0, 2000),
+      tag: typeof tag === 'string' ? tag.trim().slice(0, 40) : 'Обговорення',
+      category: category === 'games' ? 'games' : 'movies',
+      user: getUserId(req)
+    });
     await disc.save();
     const populated = await Discussion.findById(disc._id).populate('user', 'username avatar accentColor').lean();
     res.status(201).json(populated);
-  } catch (err) { res.status(400).json({ message: 'Не вдалося створити обговорення' }); }
+  } catch (err) {
+    console.error('POST /discussions error:', err);
+    res.status(400).json({ message: 'Не вдалося створити обговорення' });
+  }
 });
 
 router.post('/discussions/:id/reply', auth, async (req, res) => {
   try {
-    const { text } = req.body;
-    if (!text || !text.trim()) return res.status(400).json({ message: 'Введи відповідь' });
+    const { text } = req.body || {};
+    if (typeof text !== 'string' || !text.trim()) return res.status(400).json({ message: 'Введи відповідь' });
     const user = await User.findById(getUserId(req)).lean();
     const populated = await Discussion.findByIdAndUpdate(
       req.params.id,
-      { $push: { replies: { username: user?.username || 'Геймер', avatar: user?.avatar || 'cyber', text: text.trim() } } },
+      { $push: { replies: { username: user?.username || 'Геймер', avatar: user?.avatar || 'cyber', text: text.trim().slice(0, 1000) } } },
       { returnDocument: 'after' }
     ).populate('user', 'username avatar accentColor').lean();
     if (!populated) return res.status(404).json({ message: 'Тему не знайдено' });
     res.json(populated);
-  } catch (err) { res.status(400).json({ message: 'Помилка відповіді' }); }
+  } catch (err) {
+    console.error('POST /discussions/:id/reply error:', err);
+    res.status(400).json({ message: 'Помилка відповіді' });
+  }
 });
 
 router.post('/discussions/:id/like', auth, async (req, res) => {
@@ -254,7 +402,10 @@ router.post('/discussions/:id/like', auth, async (req, res) => {
       .populate('user', 'username avatar accentColor').lean();
     if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
-  } catch (err) { res.status(500).json({ message: 'Помилка лайку' }); }
+  } catch (err) {
+    console.error('POST /discussions/:id/like error:', err);
+    res.status(500).json({ message: 'Помилка лайку' });
+  }
 });
 
 router.get('/trending', auth, async (req, res) => {
@@ -316,25 +467,43 @@ router.get('/trending', auth, async (req, res) => {
     ];
 
     res.json({ communityHits, cinemaHits, newReleases });
-  } catch (err) { res.status(500).json({ message: 'Помилка трендів' }); }
+  } catch (err) {
+    console.error('GET /trending error:', err);
+    res.status(500).json({ message: 'Помилка трендів' });
+  }
 });
 
 router.get('/playlists', auth, async (req, res) => {
   try {
     const customPlaylists = await Playlist.find().sort({ createdAt: -1 }).populate('user', 'username avatar accentColor').lean();
     res.json(customPlaylists);
-  } catch (err) { res.status(500).json({ message: 'Помилка плейлистів' }); }
+  } catch (err) {
+    console.error('GET /playlists error:', err);
+    res.status(500).json({ message: 'Помилка плейлистів' });
+  }
 });
 
 router.post('/playlists', auth, async (req, res) => {
   try {
-    const { title, desc, theme, category, games } = req.body;
-    if (!title || !Array.isArray(games) || games.length === 0) return res.status(400).json({ message: 'Додай назву та тайтли' });
-    const newPlaylist = new Playlist({ title: title.trim(), desc: (desc || '').trim(), theme: theme || 'indigo', category: category || 'games', games: games.slice(0, 12), user: getUserId(req) });
+    const { title, desc, theme, category, games } = req.body || {};
+    if (typeof title !== 'string' || !title.trim() || !Array.isArray(games) || games.length === 0) {
+      return res.status(400).json({ message: 'Додай назву та тайтли' });
+    }
+    const newPlaylist = new Playlist({
+      title: title.trim().slice(0, 120),
+      desc: typeof desc === 'string' ? desc.trim().slice(0, 500) : '',
+      theme: typeof theme === 'string' ? theme : 'indigo',
+      category: category === 'movies' ? 'movies' : 'games',
+      games: games.slice(0, 12),
+      user: getUserId(req)
+    });
     await newPlaylist.save();
     const populated = await Playlist.findById(newPlaylist._id).populate('user', 'username avatar accentColor').lean();
     res.status(201).json(populated);
-  } catch (err) { res.status(400).json({ message: 'Помилка створення плейлиста' }); }
+  } catch (err) {
+    console.error('POST /playlists error:', err);
+    res.status(400).json({ message: 'Помилка створення плейлиста' });
+  }
 });
 
 router.post('/playlists/:id/like', auth, async (req, res) => {
@@ -346,29 +515,37 @@ router.post('/playlists/:id/like', auth, async (req, res) => {
       .populate('user', 'username avatar accentColor').lean();
     if (!populated) return res.status(404).json({ message: 'Не знайдено' });
     res.json(populated);
-  } catch (err) { res.status(500).json({ message: 'Помилка лайку' }); }
+  } catch (err) {
+    console.error('POST /playlists/:id/like error:', err);
+    res.status(500).json({ message: 'Помилка лайку' });
+  }
 });
 
 router.delete('/playlists/:id', auth, async (req, res) => {
   try {
     await Playlist.findOneAndDelete({ _id: req.params.id, user: getUserId(req) });
     res.json({ message: 'Видалено' });
-  } catch (err) { res.status(500).json({ message: 'Помилка видалення' }); }
+  } catch (err) {
+    console.error('DELETE /playlists/:id error:', err);
+    res.status(500).json({ message: 'Помилка видалення' });
+  }
 });
 
-// Заміни свої старі router.get('/search', ...) та router.get('/search-media', ...) у файлі backend/src/routes/itemRoutes.js на ці:
-
 router.get('/search', auth, async (req, res) => {
-  const query = (req.query.q || '').trim();
-  const genre = (req.query.genre || '').trim();
-  const category = (req.query.category || '').trim();
-  const year = (req.query.year || '').trim();
-  const sort = (req.query.sort || 'popular').trim();
+  const query = String(req.query.q || '').trim();
+  const genre = String(req.query.genre || '').trim();
+  const category = String(req.query.category || '').trim();
+  const year = String(req.query.year || '').trim();
+  const sort = String(req.query.sort || 'popular').trim();
+
+  if (year && !ALLOWED_YEARS.test(year)) {
+    return res.status(400).json({ message: 'Некоректний параметр року' });
+  }
 
   if (!query && !genre && !category && !year) return res.json([]);
 
   try {
-    if (!process.env.RAWG_API_KEY) return res.status(500).json({ message: "Ключ RAWG не знайдено" });
+    if (!process.env.RAWG_API_KEY) return res.status(500).json({ message: 'Ключ RAWG не знайдено' });
 
     let url = `https://api.rawg.io/api/games?key=${process.env.RAWG_API_KEY}&page_size=12`;
     if (query) url += `&search=${encodeURIComponent(query)}`;
@@ -393,7 +570,7 @@ router.get('/search', auth, async (req, res) => {
       else if (year === '2010-2014') url += `&dates=2010-01-01,2014-12-31`;
       else if (year === '2000s') url += `&dates=2000-01-01,2009-12-31`;
       else if (year === 'classic') url += `&dates=1980-01-01,1999-12-31`;
-      else url += `&dates=${year}-01-01,${year}-12-31`;
+      else url += `&dates=${encodeURIComponent(year)}-01-01,${encodeURIComponent(year)}-12-31`;
     }
 
     if (!query) {
@@ -413,7 +590,6 @@ router.get('/search', auth, async (req, res) => {
       genres: game.genres ? game.genres.map(g => g.name) : []
     }));
 
-    // Сувора фільтрація року, якщо RAWG при текстовому пошуку підмішав інші роки
     if (year) {
       results = results.filter(item => {
         const y = item.releaseYear;
@@ -428,16 +604,21 @@ router.get('/search', auth, async (req, res) => {
 
     res.json(results.slice(0, 10));
   } catch (err) {
-    res.status(500).json({ message: "Помилка пошуку ігор" });
+    console.error('GET /search error:', err.message);
+    res.status(500).json({ message: 'Помилка пошуку ігор' });
   }
 });
 
 router.get('/search-media', auth, async (req, res) => {
-  const query = (req.query.q || '').trim();
-  const genre = (req.query.genre || '').trim();
-  const category = (req.query.category || '').trim();
-  const year = (req.query.year || '').trim();
-  const sort = (req.query.sort || 'popular').trim();
+  const query = String(req.query.q || '').trim();
+  const genre = String(req.query.genre || '').trim();
+  const category = String(req.query.category || '').trim();
+  const year = String(req.query.year || '').trim();
+  const sort = String(req.query.sort || 'popular').trim();
+
+  if (year && !ALLOWED_YEARS.test(year)) {
+    return res.status(400).json({ message: 'Некоректний параметр року' });
+  }
 
   if (!query && !genre && !category && !year) return res.json([]);
 
@@ -534,15 +715,23 @@ router.get('/search-media', auth, async (req, res) => {
 
     res.json(finalFiltered);
   } catch (err) {
-    res.status(500).json({ message: "Помилка пошуку кіно" });
+    console.error('GET /search-media error:', err.message);
+    res.status(500).json({ message: 'Помилка пошуку кіно' });
   }
 });
 
 router.post('/steam-unlink', auth, async (req, res) => {
   try {
-    const updatedUser = await User.findByIdAndUpdate(getUserId(req), { steamSynced: false, steamId: '' }, { returnDocument: 'after' }).select('-password');
+    const updatedUser = await User.findByIdAndUpdate(
+      getUserId(req),
+      { steamSynced: false, steamId: '' },
+      { returnDocument: 'after' }
+    ).select('-password');
     res.json({ message: "Steam від'єднано", userProfile: updatedUser });
-  } catch (err) { res.status(500).json({ message: "Помилка від'єднання Steam" }); }
+  } catch (err) {
+    console.error('POST /steam-unlink error:', err);
+    res.status(500).json({ message: "Помилка від'єднання Steam" });
+  }
 });
 
 router.get('/steam-live', auth, async (req, res) => {
@@ -553,25 +742,34 @@ router.get('/steam-live', auth, async (req, res) => {
       return res.json({ synced: false, inGame: false });
     }
 
-    const summaryRes = await axios.get(`https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=${process.env.STEAM_API_KEY}&steamids=${user.steamId}`);
+    const summaryRes = await axios.get(
+      `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key=${process.env.STEAM_API_KEY}&steamids=${encodeURIComponent(user.steamId)}`
+    );
     const player = summaryRes.data?.response?.players?.[0];
-    let inGame = Boolean(player && player.gameextrainfo);
-    let gameTitle = player?.gameextrainfo || null;
+    const inGame = Boolean(player && player.gameextrainfo);
+    const gameTitle = player?.gameextrainfo || null;
     let matchedItemId = null;
 
     const userItems = await Item.find({ user: userId }).lean();
 
     try {
-      const recentRes = await axios.get(`https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v0001/?key=${process.env.STEAM_API_KEY}&steamid=${user.steamId}`);
+      const recentRes = await axios.get(
+        `https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/v0001/?key=${process.env.STEAM_API_KEY}&steamid=${encodeURIComponent(user.steamId)}`
+      );
       const recentGames = recentRes.data?.response?.games || [];
       const bulkOps = [];
 
       for (const rg of recentGames) {
         const normRg = normalizeTitle(rg.name);
-        const match = userItems.find(item => normalizeTitle(item.title) === normRg || item.steamAppId === rg.appid);
+        const match = userItems.find(item => {
+          if (item.steamAppId && String(item.steamAppId) === String(rg.appid)) return true;
+          const normItem = normalizeTitle(item.title);
+          return normRg.length > 0 && normItem.length > 0 && normItem === normRg;
+        });
+
         if (match) {
           const freshHours = Math.round(((rg.playtime_forever || 0) / 60) * 10) / 10;
-          if (freshHours > (match.playtime || 0)) {
+          if (freshHours > (Number(match.playtime) || 0)) {
             const nextStatus = (match.status === 'backlog' || match.status === 'wishlist') ? 'playing' : match.status;
             bulkOps.push({
               updateOne: {
@@ -590,33 +788,50 @@ router.get('/steam-live', auth, async (req, res) => {
 
     const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 }).lean();
     if (inGame && gameTitle) {
-      const matched = updatedItems.find(i => normalizeTitle(i.title).includes(normalizeTitle(gameTitle)));
-      if (matched) matchedItemId = matched._id;
+      const normLive = normalizeTitle(gameTitle);
+      if (normLive.length > 0) {
+        const matched = updatedItems.find(i => {
+          const normItem = normalizeTitle(i.title);
+          return normItem.length > 0 && (normItem === normLive || normItem.includes(normLive));
+        });
+        if (matched) matchedItemId = matched._id;
+      }
     }
     res.json({ synced: true, inGame, gameTitle, matchedItemId, items: updatedItems });
-  } catch (err) { res.json({ synced: false, inGame: false }); }
+  } catch (err) {
+    res.json({ synced: false, inGame: false });
+  }
 });
 
 router.post('/steam-sync', auth, async (req, res) => {
-  const { steamInput } = req.body;
-  if (!steamInput || !process.env.STEAM_API_KEY) return res.status(400).json({ message: "Перевір Steam ID або STEAM_API_KEY" });
+  const steamInput = typeof req.body?.steamInput === 'string' ? req.body.steamInput.trim() : '';
+  if (!steamInput || !process.env.STEAM_API_KEY) {
+    return res.status(400).json({ message: 'Перевір Steam ID або STEAM_API_KEY' });
+  }
   try {
-    let steamId = steamInput.trim().replace(/\/$/, '');
-    if (steamId.includes('steamcommunity.com/profiles/')) steamId = steamId.split('steamcommunity.com/profiles/')[1].split('/')[0];
-    else if (steamId.includes('steamcommunity.com/id/')) {
+    let steamId = steamInput.replace(/\/$/, '');
+    if (steamId.includes('steamcommunity.com/profiles/')) {
+      steamId = steamId.split('steamcommunity.com/profiles/')[1].split('/')[0];
+    } else if (steamId.includes('steamcommunity.com/id/')) {
       const vanity = steamId.split('steamcommunity.com/id/')[1].split('/')[0];
-      const resolveRes = await axios.get(`https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/?key=${process.env.STEAM_API_KEY}&vanityurl=${vanity}`);
+      const resolveRes = await axios.get(
+        `https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/?key=${process.env.STEAM_API_KEY}&vanityurl=${encodeURIComponent(vanity)}`
+      );
       if (resolveRes.data?.response?.success === 1) steamId = resolveRes.data.response.steamid;
-      else return res.status(400).json({ message: "Не знайдено Steam профіль" });
+      else return res.status(400).json({ message: 'Не знайдено Steam профіль' });
     } else if (!/^\d{17}$/.test(steamId)) {
-      const resolveRes = await axios.get(`https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/?key=${process.env.STEAM_API_KEY}&vanityurl=${steamId}`);
+      const resolveRes = await axios.get(
+        `https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/?key=${process.env.STEAM_API_KEY}&vanityurl=${encodeURIComponent(steamId)}`
+      );
       if (resolveRes.data?.response?.success === 1) steamId = resolveRes.data.response.steamid;
-      else return res.status(400).json({ message: "Неправильний Steam ID" });
+      else return res.status(400).json({ message: 'Неправильний Steam ID' });
     }
 
-    const ownedRes = await axios.get(`https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=${process.env.STEAM_API_KEY}&steamid=${steamId}&include_appinfo=1&include_played_free_games=1`);
+    const ownedRes = await axios.get(
+      `https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/?key=${process.env.STEAM_API_KEY}&steamid=${encodeURIComponent(steamId)}&include_appinfo=1&include_played_free_games=1`
+    );
     const steamGames = ownedRes.data?.response?.games;
-    if (!steamGames) return res.status(400).json({ message: "Профіль прихований" });
+    if (!steamGames) return res.status(400).json({ message: 'Профіль прихований' });
 
     const userId = getUserId(req);
     const userItems = await Item.find({ user: userId }).lean();
@@ -627,11 +842,17 @@ router.post('/steam-sync', auth, async (req, res) => {
     for (const sg of [...steamGames].sort((a, b) => (b.playtime_forever || 0) - (a.playtime_forever || 0))) {
       if (!sg.name) continue;
       const hours = Math.round(((sg.playtime_forever || 0) / 60) * 10) / 10;
-      const existingItem = userItems.find(item => normalizeTitle(item.title) === normalizeTitle(sg.name) || item.steamAppId === sg.appid);
+      const normSg = normalizeTitle(sg.name);
+
+      const existingItem = userItems.find(item => {
+        if (item.steamAppId && String(item.steamAppId) === String(sg.appid)) return true;
+        const normItem = normalizeTitle(item.title);
+        return normSg.length > 0 && normItem.length > 0 && normItem === normSg;
+      });
 
       if (existingItem) {
-        const updateFields = { steamAppId: sg.appid };
-        if (hours > 0) {
+        const updateFields = { steamAppId: String(sg.appid) };
+        if (hours > (Number(existingItem.playtime) || 0)) {
           updateFields.playtime = hours;
           if (existingItem.status === 'backlog' || existingItem.status === 'wishlist') {
             updateFields.status = 'playing';
@@ -649,11 +870,11 @@ router.post('/steam-sync', auth, async (req, res) => {
         bulkOps.push({
           insertOne: {
             document: {
-              title: sg.name,
+              title: String(sg.name).slice(0, 200),
               mediaType: 'game',
               imageUrl: `https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/${sg.appid}/library_600x900.jpg`,
-              playtime: hours,
-              steamAppId: sg.appid,
+              playtime: Math.min(100000, hours),
+              steamAppId: String(sg.appid),
               genres: ['Steam'],
               status: hours > 0 ? 'playing' : 'backlog',
               likes: [],
@@ -668,14 +889,21 @@ router.post('/steam-sync', auth, async (req, res) => {
       await Item.bulkWrite(bulkOps);
     }
 
-    const updatedUser = await User.findByIdAndUpdate(userId, { steamSynced: true, steamId }, { returnDocument: 'after' }).select('-password');
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { steamSynced: true, steamId },
+      { returnDocument: 'after' }
+    ).select('-password');
     const updatedItems = await Item.find({ user: userId }).sort({ playtime: -1, createdAt: -1 }).lean();
     res.json({ items: updatedItems, syncedCount, importedCount, userProfile: updatedUser });
-  } catch (err) { res.status(500).json({ message: "Помилка Steam API" }); }
+  } catch (err) {
+    console.error('POST /steam-sync error:', err);
+    res.status(500).json({ message: 'Помилка Steam API' });
+  }
 });
 
 async function fetchExternalCatalogInfo(query, category = 'game') {
-  const cleanQuery = (query || '').trim();
+  const cleanQuery = String(query || '').trim();
   if (!cleanQuery) return 'Назву для пошуку не вказано.';
 
   try {
@@ -704,13 +932,16 @@ async function fetchExternalCatalogInfo(query, category = 'game') {
       const topGame = searchRes.data?.results?.[0];
       if (topGame) {
         let description = '';
+        let avgPlaytime = 0;
         try {
           const detailRes = await axios.get(`https://api.rawg.io/api/games/${topGame.id}?key=${rawgKey}`, { timeout: 4000 });
           description = (detailRes.data?.description_raw || '').slice(0, 600);
+          avgPlaytime = Number(detailRes.data?.playtime) || 0;
         } catch (e) {}
         const year = topGame.released ? topGame.released.substring(0, 4) : 'невідомий';
         const genres = (topGame.genres || []).map(g => g.name).join(', ');
-        return `Знайдено в базі RAWG: гра «${topGame.name}» (${year} рік, жанри: ${genres}, Metacritic: ${topGame.metacritic || 'немає'}). Опис: ${description || 'детальний текстовий опис відсутній'}`;
+        const playtimeStr = avgPlaytime > 0 ? `${avgPlaytime} год` : 'невідомо';
+        return `Знайдено в базі RAWG: гра «${topGame.name}» (${year} рік, жанри: ${genres}, Metacritic: ${topGame.metacritic || 'немає'}, Середня тривалість за RAWG: ${playtimeStr}). Опис: ${description || 'детальний текстовий опис відсутній'}`;
       }
     }
   } catch (err) {
@@ -719,9 +950,16 @@ async function fetchExternalCatalogInfo(query, category = 'game') {
   return 'У каталозі нічого не знайдено за цим запитом.';
 }
 
-router.post('/ai-assistant', auth, async (req, res) => {
+router.post('/ai-assistant', auth, aiRateLimiter, async (req, res) => {
   try {
-    const { prompt, mode, history = [] } = req.body;
+    const prompt = String(req.body?.prompt || '').slice(0, 500).trim();
+    if (!prompt) {
+      return res.status(400).json({ message: 'Запит не може бути порожнім' });
+    }
+
+    const mode = req.body?.mode === 'movies' ? 'movies' : 'games';
+    const lang = ['uk', 'en', 'ru'].includes(req.body?.lang) ? req.body.lang : 'uk';
+    const history = Array.isArray(req.body?.history) ? req.body.history : [];
     const isCinema = mode === 'movies';
     const userId = getUserId(req);
 
@@ -732,15 +970,25 @@ router.post('/ai-assistant', auth, async (req, res) => {
       return isCinema ? isMedia : !isMedia;
     });
 
-    const lowerPrompt = (prompt || '').toLowerCase();
-    const asksAboutMovie = /(фільм|кіно|серіал|аніме|дивитис|подивитис)/i.test(lowerPrompt);
-    const asksAboutGame = /(гра|гру|ігри|ігор|пограти|пройти|геймплей)/i.test(lowerPrompt);
+    const lowerPrompt = prompt.toLowerCase();
+    const asksAboutMovie = /(фільм|кіно|серіал|аніме|дивитис|подивитис|movie|series|anime|film)/i.test(lowerPrompt);
+    const asksAboutGame = /(гра|гру|ігри|ігор|пограти|пройти|геймплей|game|play|gameplay)/i.test(lowerPrompt);
 
     if (isCinema && asksAboutGame && !asksAboutMovie) {
-      return res.json({ reply: "Я розбираюся тільки в кіно, серіалах та аніме! Щодо відеоігор переходь у вкладку **ШІ-Порадник Ігор**." });
+      const msgByLang = {
+        uk: 'Я розбираюся тільки в кіно, серіалах та аніме! Щодо відеоігор переходь у вкладку **ШІ-Порадник Ігор**.',
+        en: 'I specialize only in movies, series, and anime! For video games, please switch to the **AI Game Advisor** tab.',
+        ru: 'Я разбираюсь только в кино, сериалах и аниме! По поводу видеоигр переходи во вкладку **ИИ-Советник Игр**.'
+      };
+      return res.json({ reply: msgByLang[lang] });
     }
     if (!isCinema && asksAboutMovie && !asksAboutGame) {
-      return res.json({ reply: "Я спеціалізуюся тільки на відеоіграх! Щодо фільмів та серіалів переходь у вкладку **ШІ-Кінопорадник**." });
+      const msgByLang = {
+        uk: 'Я спеціалізуюся тільки на відеоіграх! Щодо фільмів та серіалів переходь у вкладку **ШІ-Кінопорадник**.',
+        en: 'I specialize only in video games! For movies and series, please switch to the **AI Cinema Advisor** tab.',
+        ru: 'Я специализируюсь только на видеоиграх! По поводу фильмов и сериалов переходи во вкладку **ИИ-Киносоветник**.'
+      };
+      return res.json({ reply: msgByLang[lang] });
     }
 
     const genreCounts = {};
@@ -753,58 +1001,64 @@ router.post('/ai-assistant', auth, async (req, res) => {
     const topGenres = Object.entries(genreCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([g]) => g);
     const totalHours = Math.round(items.reduce((acc, i) => acc + (Number(i.playtime) || 0), 0) * 10) / 10;
 
-    // Промпт: Навчаємо ШІ перекладати англійською перед викликом пошуку
+    const langDirective =
+      lang === 'en'
+        ? 'Відповідай ТІЛЬКИ англійською мовою (English).'
+        : lang === 'ru'
+        ? 'Відповідай ТІЛЬКИ російською мовою (Русский).'
+        : 'Відповідай ТІЛЬКИ українською мовою.';
+
     const systemInstructionText = isCinema
-      ? `Ти — харизматичний, розумний кінокритик на платформі Backlogger. Відповідай ТІЛЬКИ українською мовою, живо, дружньо і по суті. Назви завжди виділяй жирним (**Назва**).
-Ти консультуєш виключно про кіно, серіали та аніме. 
-ВАЖЛИВО: Якщо питають про сюжет, акторів чи деталі конкретного фільму/серіалу, ОБОВ'ЯЗКОВО виклич інструмент searchCatalogInfo. АЛЕ ПЕРЕД ЦИМ переклади назву фільму англійською мовою (наприклад, "Початок" -> "Inception").
-Дані про кіноколекцію користувача: ${items.length} тайтлів, ${totalHours} год. Улюблені жанри: ${topGenres.join(', ')}.`
-      : `Ти — досвідчений геймер та ігровий оглядач на платформі Backlogger. Відповідай ТІЛЬКИ українською мовою, живо, конкретно і як свій друг. Назви ігор завжди виділяй жирним (**Назва**).
-Ти консультуєш виключно про відеоігри. 
-ВАЖЛИВО: Якщо питають про сюжет гри, геймплей або скільки годин займає проходження (наприклад, Відьмак 3, Far Cry 5), ОБОВ'ЯЗКОВО виклич інструмент searchCatalogInfo. АЛЕ ПЕРЕД ЦИМ переклади назву гри англійською мовою (наприклад, "Відьмак 3" -> "The Witcher 3").
-Статистика гравця: ${items.length} ігор, ${totalHours} год. Улюблені жанри: ${topGenres.join(', ')}.`;
+      ? `Ти — харизматичний, розумний кінокритик на платформі Backlogger. ${langDirective} Спілкуйся живо, дружньо і по суті. Назви завжди виділяй жирним (**Назва**).
+Ти консультуєш виключно про кіно, серіали та аніме.
+ВАЖЛИВО: Якщо питають про сюжет, акторів чи деталі конкретного фільму/серіалу, ОБОВ'ЯЗКОВО виклич інструмент searchCatalogInfo. АЛЕ ПЕРЕД ЦИМ переклади назву фільму англійською мовою (наприклад, "Початок" -> "Inception"). Якщо в отриманих даних немає потрібної інформації, так і скажи, нічого не вигадуй.
+Дані про кіноколекцію користувача: ${items.length} тайтлів, ${totalHours} год. Улюблені жанри: ${topGenres.join(', ') || 'ще формуються'}.`
+      : `Ти — досвідчений геймер та ігровий оглядач на платформі Backlogger. ${langDirective} Спілкуйся живо, конкретно і як свій друг. Назви ігор завжди виділяй жирним (**Назва**).
+Ти консультуєш виключно про відеоігри.
+ВАЖЛИВО: Якщо питають про сюжет гри, геймплей або скільки годин займає проходження (наприклад, Відьмак 3, Far Cry 5), ОБОВ'ЯЗКОВО виклич інструмент searchCatalogInfo. АЛЕ ПЕРЕД ЦИМ переклади назву гри англійською мовою (наприклад, "Відьмак 3" -> "The Witcher 3"). Якщо в отриманих даних немає потрібної інформації, так і скажи, нічого не вигадуй.
+Статистика гравця: ${items.length} ігор, ${totalHours} год. Улюблені жанри: ${topGenres.join(', ') || 'ще формуються'}.`;
 
     const apiKey = (process.env.GROQ_API_KEY || '').trim();
     if (!apiKey) return res.json({ reply: 'API ключ не налаштовано.' });
 
     const messagesArray = [{ role: 'system', content: systemInstructionText }];
-    const recentHistory = Array.isArray(history) ? history.slice(-8) : [];
-    
+    const recentHistory = history.slice(-8);
+
     for (const msg of recentHistory) {
-      if (!msg || !msg.text) continue;
+      if (!msg || typeof msg.text !== 'string') continue;
+      const cleanText = msg.text.slice(0, 1000).trim();
+      if (!cleanText) continue;
       messagesArray.push({
         role: msg.role === 'ai' ? 'assistant' : 'user',
-        content: String(msg.text)
+        content: cleanText
       });
     }
 
     if (messagesArray.length === 1 || messagesArray[messagesArray.length - 1].role !== 'user') {
-      messagesArray.push({ role: 'user', content: String(prompt) });
+      messagesArray.push({ role: 'user', content: prompt });
     }
 
     const toolsDeclaration = [{
-      type: "function",
+      type: 'function',
       function: {
-        name: "searchCatalogInfo",
-        description: "Шукає сюжет, тривалість та рейтинг у базах RAWG та TMDB.",
+        name: 'searchCatalogInfo',
+        description: 'Шукає сюжет, тривалість та рейтинг у базах RAWG та TMDB.',
         parameters: {
-          type: "object",
+          type: 'object',
           properties: {
-            query: { type: "string", description: "Назва АНГЛІЙСЬКОЮ мовою (English title)" },
-            category: { type: "string", enum: ["game", "movie"] }
+            query: { type: 'string', description: 'Назва АНГЛІЙСЬКОЮ мовою (English title)' },
+            category: { type: 'string', enum: ['game', 'movie'] }
           },
-          required: ["query", "category"]
+          required: ['query', 'category']
         }
       }
     }];
 
-    // Нові production-моделі за твоєю вимогою
     const modelsToTry = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile'];
     let finalReply = '';
 
     for (const modelName of modelsToTry) {
       try {
-        // Даємо кожній моделі свіжу копію повідомлень
         const currentMessages = [...messagesArray];
 
         const response = await axios.post(
@@ -824,12 +1078,18 @@ router.post('/ai-assistant', auth, async (req, res) => {
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           const toolCall = msg.tool_calls[0];
-          const args = JSON.parse(toolCall.function.arguments);
-          
-          // Виклик бази даних із перекладеним запитом
-          const catalogData = await fetchExternalCatalogInfo(args.query || prompt, args.category || (isCinema ? 'movie' : 'game'));
+          const args = JSON.parse(toolCall.function.arguments || '{}');
 
-          currentMessages.push(msg);
+          const catalogData = await fetchExternalCatalogInfo(
+            args.query || prompt,
+            args.category || (isCinema ? 'movie' : 'game')
+          );
+
+          currentMessages.push({
+            role: 'assistant',
+            content: msg.content || '',
+            tool_calls: msg.tool_calls
+          });
           currentMessages.push({
             role: 'tool',
             tool_call_id: toolCall.id,
@@ -842,13 +1102,13 @@ router.post('/ai-assistant', auth, async (req, res) => {
             {
               model: modelName,
               messages: currentMessages,
+              tools: toolsDeclaration,
               temperature: 0.7,
               max_tokens: 1200
             },
             { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 30000 }
           );
 
-          // Захист від порожньої відповіді
           finalReply = (secondResponse.data?.choices?.[0]?.message?.content || '').trim();
         } else {
           finalReply = (msg.content || '').trim();
@@ -858,19 +1118,16 @@ router.post('/ai-assistant', auth, async (req, res) => {
           finalReply = finalReply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
           return res.json({ reply: finalReply });
         }
-
       } catch (apiErr) {
-        // Логуємо помилку кожної моделі окремо і йдемо до наступної
         console.error(`Модель ${modelName} повернула помилку:`, apiErr.response?.data?.error?.message || apiErr.message);
       }
     }
 
-    // Якщо впали всі моделі, віддаємо адекватну відповідь без технічного сміття
     return res.json({
       reply: 'Вибач, мої нейронні мережі зараз перевантажені або недоступні. Давай спробуємо ще раз через хвилинку!'
     });
-
   } catch (err) {
+    console.error('POST /ai-assistant error:', err);
     res.status(500).json({ message: 'Помилка ШІ-помічника' });
   }
 });
@@ -879,16 +1136,53 @@ router.get('/', auth, async (req, res) => {
   try {
     const items = await Item.find({ user: getUserId(req) }).sort({ playtime: -1, createdAt: -1 }).lean();
     res.json(items);
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    console.error('GET /items error:', err);
+    res.status(500).json({ message: 'Помилка завантаження колекції' });
+  }
 });
 
 router.post('/', auth, async (req, res) => {
   try {
+    const userId = getUserId(req);
+    const currentCount = await Item.countDocuments({ user: userId });
+    if (currentCount >= 3000) {
+      return res.status(400).json({ message: 'Досягнуто ліміт колекції (максимум 3000 тайтлів)' });
+    }
+
     const cleanData = sanitizeItemPayload(req.body);
-    const item = new Item({ ...cleanData, user: getUserId(req) });
+    const titleStr = typeof cleanData.title === 'string' ? cleanData.title.trim() : '';
+    if (!titleStr) {
+      return res.status(400).json({ message: 'Назва тайтла обовʼязкова' });
+    }
+    cleanData.title = titleStr;
+
+    const mediaType = ['game', 'movie', 'series', 'anime'].includes(cleanData.mediaType)
+      ? cleanData.mediaType
+      : 'game';
+    cleanData.mediaType = mediaType;
+
+    const normNew = normalizeTitle(titleStr);
+    const existingItems = await Item.find({ user: userId, mediaType }).select('title').lean();
+    const isDuplicate = existingItems.some(i => {
+      const normExisting = normalizeTitle(i.title);
+      if (normNew.length > 0 && normExisting.length > 0) {
+        return normNew === normExisting;
+      }
+      return (i.title || '').trim().toLowerCase() === titleStr.toLowerCase();
+    });
+
+    if (isDuplicate) {
+      return res.status(400).json({ message: 'Цей тайтл вже є у твоєму списку!' });
+    }
+
+    const item = new Item({ ...cleanData, user: userId });
     const newItem = await item.save();
     res.status(201).json(newItem);
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  } catch (err) {
+    console.error('POST /items error:', err);
+    res.status(400).json({ message: 'Не вдалося додати тайтл' });
+  }
 });
 
 router.put('/:id', auth, async (req, res) => {
@@ -901,14 +1195,20 @@ router.put('/:id', auth, async (req, res) => {
     );
     if (!updatedItem) return res.status(404).json({ message: 'Тайтл не знайдено' });
     res.json(updatedItem);
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  } catch (err) {
+    console.error('PUT /items/:id error:', err);
+    res.status(400).json({ message: 'Не вдалося оновити тайтл' });
+  }
 });
 
 router.delete('/:id', auth, async (req, res) => {
   try {
     await Item.findOneAndDelete({ _id: req.params.id, user: getUserId(req) });
     res.json({ message: 'Видалено' });
-  } catch (err) { res.status(500).json({ message: err.message }); }
+  } catch (err) {
+    console.error('DELETE /items/:id error:', err);
+    res.status(500).json({ message: 'Не вдалося видалити тайтл' });
+  }
 });
 
 module.exports = router;

@@ -1,3 +1,4 @@
+// frontend/src/App.jsx
 import { useState } from 'react';
 import axios from 'axios';
 import { Toaster, toast } from 'react-hot-toast';
@@ -6,8 +7,7 @@ import { Sparkles, Gamepad2, Film, Trophy, ArrowUp, RefreshCw, X, LogIn, UserPlu
 import Home from './pages/Home';
 import { LanguageProvider, useTranslation } from './i18n';
 
-// Єдине налаштування базового URL та синхронне підключення токена до всіх запитів
-axios.defaults.baseURL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+axios.defaults.baseURL = import.meta.env.VITE_API_URL || '';
 
 axios.interceptors.request.use((config) => {
   const savedToken = localStorage.getItem('token');
@@ -16,6 +16,20 @@ axios.interceptors.request.use((config) => {
   }
   return config;
 });
+
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error.response?.status;
+    const reqUrl = String(error.config?.url || '');
+    if (status === 401 && !reqUrl.includes('/api/auth/')) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('username');
+      window.location.reload();
+    }
+    return Promise.reject(error);
+  }
+);
 
 function AppContent() {
   const { t, lang, changeLanguage } = useTranslation();
@@ -37,32 +51,34 @@ function AppContent() {
     setFormData({ username: '', password: '' });
   };
 
-const handleSubmit = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
       const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
       const res = await axios.post(endpoint, formData);
 
-      // Оскільки тепер бекенд видає токен і при вході, і при реєстрації,
-      // ми одразу зберігаємо його і пускаємо користувача на сайт
-      const receivedToken = res.data.token;
-      const receivedUser = res.data.username || formData.username;
-      
+      const receivedToken = res.data?.token;
+      if (!receivedToken || typeof receivedToken !== 'string') {
+        throw new Error('Сервер не повернув токен авторизації');
+      }
+
+      const receivedUser = res.data.username || formData.username.trim();
+
       localStorage.setItem('token', receivedToken);
       localStorage.setItem('username', receivedUser);
       setUsername(receivedUser);
       setToken(receivedToken);
       setFormData({ username: '', password: '' });
       setShowAuthModal(false);
-      
+
       if (isLogin) {
         toast.success(`Вітаємо у всесвіті Backlogger, ${receivedUser}!`, { icon: '🚀' });
       } else {
         toast.success('Акаунт успішно створено! Вітаємо!', { icon: '🎉' });
       }
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Помилка авторизації');
+      toast.error(err.response?.data?.message || err.message || 'Помилка авторизації');
     } finally {
       setLoading(false);
     }
@@ -232,7 +248,7 @@ const handleSubmit = async (e) => {
             <div className="order-1 md:order-2 bg-gradient-to-br from-rose-950/50 via-[#140d10] to-[#0a0a0f] border border-rose-500/25 rounded-3xl p-6 shadow-2xl space-y-3">
               <div className="flex items-center justify-between border-b border-white/10 pb-3">
                 <span className="text-xs font-bold text-rose-300 flex items-center gap-1.5"><Film className="w-4 h-4" /> {t('landing_f4_title')}</span>
-                <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2.5 py-0.5 rounded-full font-bold">+1 серія</span>
+                <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2.5 py-0.5 rounded-full font-bold">{t('plus_one_ep')}</span>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-black/50 p-3.5 rounded-2xl border border-white/10">
@@ -296,6 +312,8 @@ const handleSubmit = async (e) => {
                   <input
                     type="text"
                     required
+                    minLength={2}
+                    maxLength={32}
                     autoComplete="username"
                     value={formData.username}
                     onChange={(e) => setFormData({ ...formData, username: e.target.value })}
@@ -307,6 +325,8 @@ const handleSubmit = async (e) => {
                   <input
                     type="password"
                     required
+                    minLength={6}
+                    maxLength={72}
                     autoComplete={isLogin ? 'current-password' : 'new-password'}
                     value={formData.password}
                     onChange={(e) => setFormData({ ...formData, password: e.target.value })}

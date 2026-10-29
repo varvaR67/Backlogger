@@ -1,59 +1,91 @@
+// backend/src/routes/authRoutes.js
 const express = require('express');
 const router = express.Router();
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-const generateToken = (userId, username) => {
-  return jwt.sign({ id: userId, username }, process.env.JWT_SECRET, { expiresIn: '7d' });
-};
+const str = (v) => (typeof v === 'string' ? v.trim() : '');
+const USERNAME_COLLATION = { locale: 'en', strength: 2 };
 
 router.post('/register', async (req, res) => {
   try {
-    const { username, password } = req.body;
-    
-    if (!username || !password || username.length < 2 || password.length < 6) {
-      return res.status(400).json({ message: 'Логін від 2 символів, пароль від 6' });
+    const username = str(req.body?.username);
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+    if (username.length < 2 || username.length > 32) {
+      return res.status(400).json({ message: 'Нікнейм має містити від 2 до 32 символів' });
     }
-    
-    // Перевірка існування користувача
-    const existingUser = await User.findOne({ username });
+
+    if (password.length < 6 || password.length > 72) {
+      return res.status(400).json({ message: 'Пароль має містити від 6 до 72 символів' });
+    }
+
+    const existingUser = await User.findOne({ username }).collation(USERNAME_COLLATION);
     if (existingUser) {
-      return res.status(400).json({ message: 'Користувач із таким нікнеймом вже існує' });
+      return res.status(400).json({ message: 'Цей нікнейм вже зайнятий' });
     }
 
     const newUser = new User({ username, password });
-    await newUser.save(); // Тут спрацює хук із User.js і захешує пароль
+    await newUser.save();
 
-    // Одразу генеруємо токен і віддаємо його на клієнт для автоматичного входу
-    const token = generateToken(newUser._id, newUser.username);
-    res.status(201).json({ token, username: newUser.username });
+    const token = jwt.sign(
+      { id: newUser._id, username: newUser.username },
+      process.env.JWT_SECRET,
+      { algorithm: 'HS256', expiresIn: '30d' }
+    );
+
+    return res.status(201).json({
+      token,
+      username: newUser.username
+    });
   } catch (err) {
-    // Обробка помилки дублювання (на випадок, якщо findOne пропустив через race condition)
-    if (err.code === 11000) {
-      return res.status(400).json({ message: 'Користувач із таким нікнеймом вже існує' });
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({ message: 'Некоректні дані реєстрації' });
     }
-    res.status(500).json({ message: 'Помилка реєстрації на сервері' });
+    if (err.code === 11000) {
+      return res.status(400).json({ message: 'Цей нікнейм вже зайнятий' });
+    }
+    console.error('Register error:', err);
+    return res.status(500).json({ message: 'Помилка сервера під час реєстрації' });
   }
 });
 
 router.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
-    
-    const user = await User.findOne({ username });
+    const username = str(req.body?.username);
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+    if (!username || !password || password.length > 72) {
+      return res.status(401).json({ message: 'Неправильний нікнейм або пароль' });
+    }
+
+    const user = await User.findOne({ username })
+      .collation(USERNAME_COLLATION)
+      .select('+password');
+
     if (!user) {
-      return res.status(404).json({ message: 'Користувача не знайдено' });
+      return res.status(401).json({ message: 'Неправильний нікнейм або пароль' });
     }
 
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({ message: 'Неправильний пароль' });
+      return res.status(401).json({ message: 'Неправильний нікнейм або пароль' });
     }
 
-    const token = generateToken(user._id, user.username);
-    res.json({ token, username: user.username });
+    const token = jwt.sign(
+      { id: user._id, username: user.username },
+      process.env.JWT_SECRET,
+      { algorithm: 'HS256', expiresIn: '30d' }
+    );
+
+    return res.json({
+      token,
+      username: user.username
+    });
   } catch (err) {
-    res.status(500).json({ message: 'Помилка входу на сервері' });
+    console.error('Login error:', err);
+    return res.status(500).json({ message: 'Помилка сервера під час входу' });
   }
 });
 

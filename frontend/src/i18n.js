@@ -1,10 +1,12 @@
-import { createContext, useContext, useState, useEffect, createElement } from 'react';
+// frontend/src/i18n.js
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, createElement } from 'react';
 
 export const resources = {
   uk: {
     nav_library: 'Бібліотека',
     nav_community: 'Спільнота',
     nav_movies: 'Кіно',
+    nav_filters: 'Фільтри',
     nav_ai: 'ШІ-Порадник',
     nav_ai_cinema: 'ШІ-Кінопорадник',
     nav_ai_guide: 'ШІ-Гід',
@@ -20,6 +22,68 @@ export const resources = {
     search_placeholder: 'Знайти гру (наприклад, Cyberpunk 2077 або S.T.A.L.K.E.R. 2)...',
     search_movies_placeholder: 'Знайти фільм, серіал або аніме (наприклад, Інтерстеллар, Пуститися берега, Атака титанів)...',
     to_wishlist: 'У вішліст',
+    filter_btn: 'Фільтр',
+    filter_search_title_games: 'Підбір ігор у каталозі',
+    filter_search_title_movies: 'Підбір кіно у каталозі',
+    filter_reset: 'Скинути',
+    filter_clear_all: 'Скинути всі фільтри',
+    filter_genre: 'Жанр',
+    filter_category: 'Категорія / Тема',
+    filter_year: 'Рік випуску',
+    filter_sort: 'Сортування',
+    filter_find_games: 'Знайти ігри',
+    filter_find_movies: 'Знайти кіно',
+    filter_empty_results: 'За цими параметрами нічого не знайдено. Спробуй змінити фільтри!',
+    genre_all: 'Усі жанри',
+    genre_action: 'Екшн',
+    genre_rpg: 'RPG / Рольові',
+    genre_shooter: 'Шутери',
+    genre_adventure: 'Пригоди',
+    genre_strategy: 'Стратегії',
+    genre_indie: 'Інді',
+    genre_racing: 'Гонки',
+    genre_sports: 'Спорт',
+    genre_sim: 'Симулятори',
+    genre_horror: 'Хоррор / Жахи',
+    genre_puzzle: 'Головоломки',
+    genre_fighting: 'Файтинги',
+    genre_drama: 'Драма',
+    genre_scifi: 'Фантастика',
+    genre_thriller: 'Трилер',
+    genre_comedy: 'Комедія',
+    genre_crime: 'Кримінал',
+    genre_mystery: 'Детектив',
+    genre_animation: 'Анімація / Аніме',
+    genre_fantasy: 'Фентезі',
+    cat_all: 'Усі категорії',
+    cat_survival: 'Виживання (Survival)',
+    cat_open_world: 'Відкритий світ',
+    cat_coop: 'Кооператив',
+    cat_story: 'Глибокий сюжет',
+    cat_cyberpunk: 'Кіберпанк',
+    cat_dark_fantasy: 'Темне фентезі',
+    cat_post_apoc: 'Постапокаліпсис',
+    cat_zombies: 'Зомбі',
+    cat_movies_only: 'Тільки фільми',
+    cat_series_only: 'Тільки серіали',
+    cat_anime_only: 'Тільки аніме',
+    year_all: 'Усі роки',
+    year_classic: 'До 2000 року',
+    sort_popular: 'За популярністю',
+    sort_rating: 'За оцінкою критиків',
+    sort_newest: 'Спочатку новіші',
+    btn_publish: 'Опублікувати',
+    btn_reply: 'Відповісти',
+    btn_close: 'Закрити',
+    btn_stop: 'Стоп',
+    btn_support: 'Підтримати проєкт',
+    ai_clear: 'Очистити',
+    ai_thinking: 'Аналізую колекцію та шукаю деталі...',
+    ai_greeting_games: 'Привіт! Я твій ігровий ШІ-Порадник. Я вже просканував твій беклог, награні години та оцінки — питай, що запустити сьогодні ввечері, про що будь-яка гра або попроси чесний розбір твого смаку!',
+    ai_greeting_movies: 'Привіт! Я твій ШІ-Кінопорадник. Бачу твою колекцію та оцінки — запитай мене про сюжет будь-якого фільму чи серіалу, попроси пораду на вечір або розбір твого кіносмаку!',
+    ai_sub: 'Памʼятає контекст розмови та знає твої оцінки',
+    ai_ph_games: 'Запитай про гру, сюжет або що запустити...',
+    ai_ph_movies: 'Запитай про фільм, акторів або що глянути...',
     card_progress: 'Прогрес',
     card_progress_cinema: 'Прогрес кіно',
     card_completed_sub: 'пройдено',
@@ -142,6 +206,7 @@ export const resources = {
     nav_library: 'Library',
     nav_community: 'Community',
     nav_movies: 'Cinema',
+    nav_filters: 'Filters',
     nav_ai: 'AI Advisor',
     nav_ai_cinema: 'AI Cinema Advisor',
     nav_ai_guide: 'AI Guide',
@@ -157,6 +222,68 @@ export const resources = {
     search_placeholder: 'Search games (e.g., Cyberpunk 2077 or S.T.A.L.K.E.R. 2)...',
     search_movies_placeholder: 'Search movies, series, or anime (e.g., Interstellar, Breaking Bad, Attack on Titan)...',
     to_wishlist: 'Wishlist',
+    filter_btn: 'Filter',
+    filter_search_title_games: 'Discover Games in Catalog',
+    filter_search_title_movies: 'Discover Cinema in Catalog',
+    filter_reset: 'Reset',
+    filter_clear_all: 'Reset all filters',
+    filter_genre: 'Genre',
+    filter_category: 'Category / Theme',
+    filter_year: 'Release Year',
+    filter_sort: 'Sort by',
+    filter_find_games: 'Find Games',
+    filter_find_movies: 'Find Movies',
+    filter_empty_results: 'Nothing found for these parameters. Try changing the filters!',
+    genre_all: 'All genres',
+    genre_action: 'Action',
+    genre_rpg: 'RPG',
+    genre_shooter: 'Shooters',
+    genre_adventure: 'Adventure',
+    genre_strategy: 'Strategy',
+    genre_indie: 'Indie',
+    genre_racing: 'Racing',
+    genre_sports: 'Sports',
+    genre_sim: 'Simulation',
+    genre_horror: 'Horror',
+    genre_puzzle: 'Puzzle',
+    genre_fighting: 'Fighting',
+    genre_drama: 'Drama',
+    genre_scifi: 'Sci-Fi',
+    genre_thriller: 'Thriller',
+    genre_comedy: 'Comedy',
+    genre_crime: 'Crime',
+    genre_mystery: 'Mystery',
+    genre_animation: 'Animation / Anime',
+    genre_fantasy: 'Fantasy',
+    cat_all: 'All categories',
+    cat_survival: 'Survival',
+    cat_open_world: 'Open World',
+    cat_coop: 'Co-op',
+    cat_story: 'Story Rich',
+    cat_cyberpunk: 'Cyberpunk',
+    cat_dark_fantasy: 'Dark Fantasy',
+    cat_post_apoc: 'Post-apocalyptic',
+    cat_zombies: 'Zombies',
+    cat_movies_only: 'Movies only',
+    cat_series_only: 'Series only',
+    cat_anime_only: 'Anime only',
+    year_all: 'All years',
+    year_classic: 'Before 2000',
+    sort_popular: 'Most Popular',
+    sort_rating: 'Highest Rated',
+    sort_newest: 'Newest First',
+    btn_publish: 'Publish',
+    btn_reply: 'Reply',
+    btn_close: 'Close',
+    btn_stop: 'Stop',
+    btn_support: 'Support Project',
+    ai_clear: 'Clear',
+    ai_thinking: 'Analyzing collection and searching details...',
+    ai_greeting_games: 'Hi! I am your AI Game Advisor. I have scanned your backlog, playtime, and ratings — ask what to play tonight, about any game plot, or for an honest taste analysis!',
+    ai_greeting_movies: 'Hi! I am your AI Cinema Advisor. I see your collection and ratings — ask me about any movie or series plot, a recommendation for tonight, or a taste breakdown!',
+    ai_sub: 'Remembers conversation context and knows your ratings',
+    ai_ph_games: 'Ask about a game, plot, or what to play...',
+    ai_ph_movies: 'Ask about a movie, actors, or what to watch...',
     card_progress: 'Progress',
     card_progress_cinema: 'Cinema Progress',
     card_completed_sub: 'completed',
@@ -279,6 +406,7 @@ export const resources = {
     nav_library: 'Библиотека',
     nav_community: 'Сообщество',
     nav_movies: 'Кино',
+    nav_filters: 'Фильтры',
     nav_ai: 'ИИ-Советник',
     nav_ai_cinema: 'ИИ-Киносоветник',
     nav_ai_guide: 'ИИ-Гид',
@@ -294,6 +422,68 @@ export const resources = {
     search_placeholder: 'Найти игру (например, Cyberpunk 2077 или S.T.A.L.K.E.R. 2)...',
     search_movies_placeholder: 'Найти фильм, сериал или аниме (например, Интерстеллар, Во все тяжкие, Атака титанов)...',
     to_wishlist: 'В вишлист',
+    filter_btn: 'Фильтр',
+    filter_search_title_games: 'Подбор игр в каталоге',
+    filter_search_title_movies: 'Подбор кино в каталоге',
+    filter_reset: 'Сбросить',
+    filter_clear_all: 'Сбросить все фильтры',
+    filter_genre: 'Жанр',
+    filter_category: 'Категория / Тема',
+    filter_year: 'Год выпуска',
+    filter_sort: 'Сортировка',
+    filter_find_games: 'Найти игры',
+    filter_find_movies: 'Найти кино',
+    filter_empty_results: 'По этим параметрам ничего не найдено. Попробуй изменить фильтры!',
+    genre_all: 'Все жанры',
+    genre_action: 'Экшен',
+    genre_rpg: 'RPG / Ролевые',
+    genre_shooter: 'Шутеры',
+    genre_adventure: 'Приключения',
+    genre_strategy: 'Стратегии',
+    genre_indie: 'Инди',
+    genre_racing: 'Гонки',
+    genre_sports: 'Спорт',
+    genre_sim: 'Симуляторы',
+    genre_horror: 'Хоррор / Ужасы',
+    genre_puzzle: 'Головоломки',
+    genre_fighting: 'Файтинги',
+    genre_drama: 'Драма',
+    genre_scifi: 'Фантастика',
+    genre_thriller: 'Триллер',
+    genre_comedy: 'Комедия',
+    genre_crime: 'Криминал',
+    genre_mystery: 'Детектив',
+    genre_animation: 'Анимация / Аниме',
+    genre_fantasy: 'Фэнтези',
+    cat_all: 'Все категории',
+    cat_survival: 'Выживание (Survival)',
+    cat_open_world: 'Открытый мир',
+    cat_coop: 'Кооператив',
+    cat_story: 'Глубокий сюжет',
+    cat_cyberpunk: 'Киберпанк',
+    cat_dark_fantasy: 'Тёмное фэнтези',
+    cat_post_apoc: 'Постапокалипсис',
+    cat_zombies: 'Зомби',
+    cat_movies_only: 'Только фильмы',
+    cat_series_only: 'Только сериалы',
+    cat_anime_only: 'Только аниме',
+    year_all: 'Все годы',
+    year_classic: 'До 2000 года',
+    sort_popular: 'По популярности',
+    sort_rating: 'По оценке критиков',
+    sort_newest: 'Сначала новые',
+    btn_publish: 'Опубликовать',
+    btn_reply: 'Ответить',
+    btn_close: 'Закрыть',
+    btn_stop: 'Стоп',
+    btn_support: 'Поддержать проект',
+    ai_clear: 'Очистить',
+    ai_thinking: 'Анализирую коллекцию и ищу детали...',
+    ai_greeting_games: 'Привет! Я твой игровой ИИ-Советник. Я уже просканировал твой бэклог, часы и оценки — спрашивай, что запустить вечером, о чём любая игра или попроси разбор твоего вкуса!',
+    ai_greeting_movies: 'Привет! Я твой ИИ-Киносоветник. Вижу твою коллекцию и оценки — спроси меня о сюжете любого фильма или сериала, попроси совет на вечер или разбор киновкуса!',
+    ai_sub: 'Помнит контекст разговора и знает твои оценки',
+    ai_ph_games: 'Спроси об игре, сюжете или что запустить...',
+    ai_ph_movies: 'Спроси о фильме, актёрах или что посмотреть...',
     card_progress: 'Прогресс',
     card_progress_cinema: 'Прогресс кино',
     card_completed_sub: 'пройдено',
@@ -419,11 +609,11 @@ const LanguageContext = createContext(null);
 export function LanguageProvider({ children }) {
   const [lang, setLang] = useState(() => localStorage.getItem('app_lang') || 'uk');
 
-  const changeLanguage = (newLang) => {
+  const changeLanguage = useCallback((newLang) => {
     setLang(newLang);
     localStorage.setItem('app_lang', newLang);
     window.dispatchEvent(new CustomEvent('app_lang_change', { detail: newLang }));
-  };
+  }, []);
 
   useEffect(() => {
     const syncLang = (e) => {
@@ -433,9 +623,13 @@ export function LanguageProvider({ children }) {
     return () => window.removeEventListener('app_lang_change', syncLang);
   }, [lang]);
 
-  const t = (key) => resources[lang]?.[key] || resources['uk']?.[key] || key;
+  const t = useCallback((key) => {
+    return resources[lang]?.[key] || resources.uk?.[key] || key;
+  }, [lang]);
 
-  return createElement(LanguageContext.Provider, { value: { t, lang, changeLanguage } }, children);
+  const value = useMemo(() => ({ t, lang, changeLanguage }), [t, lang, changeLanguage]);
+
+  return createElement(LanguageContext.Provider, { value }, children);
 }
 
 export function useTranslation() {
@@ -451,14 +645,17 @@ export function useTranslation() {
     return () => window.removeEventListener('app_lang_change', syncLang);
   }, [ctx]);
 
-  if (ctx) return ctx;
-
-  const changeLanguage = (newLang) => {
+  const changeLanguage = useCallback((newLang) => {
     setFallbackLang(newLang);
     localStorage.setItem('app_lang', newLang);
     window.dispatchEvent(new CustomEvent('app_lang_change', { detail: newLang }));
-  };
+  }, []);
 
-  const t = (key) => resources[fallbackLang]?.[key] || resources['uk']?.[key] || key;
-  return { t, lang: fallbackLang, changeLanguage };
+  const t = useCallback((key) => {
+    return resources[fallbackLang]?.[key] || resources.uk?.[key] || key;
+  }, [fallbackLang]);
+
+  const fallbackValue = useMemo(() => ({ t, lang: fallbackLang, changeLanguage }), [t, fallbackLang, changeLanguage]);
+
+  return ctx || fallbackValue;
 }

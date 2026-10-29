@@ -1,104 +1,40 @@
-import { useState, useEffect, useRef } from 'react';
+// frontend/src/components/LiveSearch.jsx
+import { useState, useEffect, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { Search, Plus, Heart, Loader2, Film, Gamepad2, SlidersHorizontal, X } from 'lucide-react';
 import { useTranslation } from '../i18n';
 
-const GAME_GENRES = [
-  { id: '', label: 'Усі жанри' },
-  { id: 'tag:horror', label: '👻 Хоррор / Жахи' },
-  { id: 'shooter', label: '🔫 Шутери' },
-  { id: 'action', label: '⚔️ Екшн' },
-  { id: 'role-playing-games-rpg', label: '🧙‍♂️ RPG (Рольові)' },
-  { id: 'adventure', label: '🗺️ Пригоди' },
-  { id: 'strategy', label: '♟️ Стратегії' },
-  { id: 'tag:survival', label: '🏕️ Виживання (Survival)' },
-  { id: 'puzzle', label: '🧩 Головоломки' },
-  { id: 'racing', label: '🏎️ Гонки' },
-  { id: 'fighting', label: '🥊 Файтинги' },
-  { id: 'simulation', label: '🚜 Симулятори' },
-  { id: 'indie', label: '💎 Інді-ігри' },
-  { id: 'sports', label: '⚽ Спорт' },
-];
-
-const GAME_CATEGORIES = [
-  { id: '', label: 'Усі категорії та сеттинги' },
-  { id: 'singleplayer', label: '👤 Одиночні (Сюжетні)' },
-  { id: 'co-op', label: '🤝 Кооператив (Co-op)' },
-  { id: 'multiplayer', label: '🌐 Мультиплеєр' },
-  { id: 'open-world', label: '🌍 Відкритий світ' },
-  { id: 'zombies', label: '🧟 Зомбі та монстри' },
-  { id: 'cyberpunk', label: '🤖 Кіберпанк' },
-  { id: 'post-apocalyptic', label: '☢️ Постапокаліпсис' },
-  { id: 'dark-fantasy', label: '🐉 Темне фентезі / Souls-like' },
-  { id: 'sci-fi', label: '🚀 Космос та Sci-Fi' },
-  { id: 'stealth', label: '🥷 Стелс' },
-];
-
-const MOVIE_GENRES = [
-  { id: '', label: 'Усі жанри' },
-  { id: '27', label: '👻 Хоррор / Жахи' },
-  { id: '53', label: '🔪 Трилер' },
-  { id: '878', label: '🚀 Фантастика (Sci-Fi)' },
-  { id: '28', label: '💥 Екшн / Бойовик' },
-  { id: '18', label: '🎭 Драма' },
-  { id: '35', label: '😂 Комедія' },
-  { id: '9648', label: '🕵️‍♂️ Детектив' },
-  { id: '80', label: '🔫 Кримінал' },
-  { id: '12', label: '🗺️ Пригоди' },
-  { id: '14', label: '🐉 Фентезі' },
-  { id: '36', label: '📜 Історичний' },
-  { id: '10752', label: '🪖 Військовий' },
-];
-
-const MOVIE_CATEGORIES = [
-  { id: 'all', label: 'Усі формати (Кіно + Серіали + Аніме)' },
-  { id: 'movie', label: '🎬 Тільки Фільми' },
-  { id: 'series', label: '📺 Тільки Серіали' },
-  { id: 'anime', label: '⛩️ Тільки Аніме' },
-];
-
-const YEAR_OPTIONS = [
-  { id: '', label: 'Усі роки' },
-  { id: '2026', label: '2026' },
-  { id: '2025', label: '2025' },
-  { id: '2024', label: '2024' },
-  { id: '2023', label: '2023' },
-  { id: '2022', label: '2022' },
-  { id: '2021', label: '2021' },
-  { id: '2020', label: '2020' },
-  { id: '2015-2019', label: '2015 – 2019' },
-  { id: '2010-2014', label: '2010 – 2014' },
-  { id: '2000s', label: '2000 – 2009' },
-  { id: 'classic', label: 'До 2000 року' },
-];
-
-const SORT_OPTIONS = [
-  { id: 'popular', label: '🔥 За популярністю' },
-  { id: 'rating', label: '⭐ За найвищим рейтингом' },
-  { id: 'newest', label: '🆕 Спочатку новіші' },
-];
-
-// Словник для автоматичного перекладу українських жанрових запитів у пошуковому рядку
-const UA_SEARCH_MAP = {
-  'хоррор': { genre: 'tag:horror', movieGenre: '27' },
-  'хорор': { genre: 'tag:horror', movieGenre: '27' },
-  'жахи': { genre: 'tag:horror', movieGenre: '27' },
-  'шутер': { genre: 'shooter', movieGenre: '28' },
-  'шутери': { genre: 'shooter', movieGenre: '28' },
-  'стрілялки': { genre: 'shooter', movieGenre: '28' },
-  'стратегії': { genre: 'strategy', movieGenre: '36' },
-  'стратегія': { genre: 'strategy', movieGenre: '36' },
-  'гонки': { genre: 'racing', movieGenre: '28' },
-  'рпг': { genre: 'role-playing-games-rpg', movieGenre: '14' },
-  'виживання': { genre: 'tag:survival', movieGenre: '53' },
-  'зомбі': { category: 'zombies', movieGenre: '27' },
-  'кіберпанк': { category: 'cyberpunk', movieGenre: '878' },
-  'кооп': { category: 'co-op', movieGenre: '' },
-  'кооператив': { category: 'co-op', movieGenre: '' },
-  'трилер': { genre: 'tag:horror', movieGenre: '53' },
-  'фантастика': { category: 'sci-fi', movieGenre: '878' },
-  'комедія': { genre: 'indie', movieGenre: '35' },
+const UK_GAME_QUERY_MAP = {
+  'хоррор': 'horror',
+  'хорор': 'horror',
+  'жахи': 'horror',
+  'відьмак': 'the witcher',
+  'сталкер': 's.t.a.l.k.e.r.',
+  'кіберпанк': 'cyberpunk',
+  'фар край': 'far cry',
+  'метро': 'metro',
+  'гта': 'grand theft auto',
+  'скайрім': 'skyrim',
+  'дум': 'doom',
+  'дарк соулс': 'dark souls',
+  'елден рінг': 'elden ring',
+  'гонки': 'racing',
+  'виживання': 'survival',
+  'зомбі': 'zombies',
+  'стратегії': 'strategy',
+  'шутер': 'shooter'
 };
+
+function translateGameQueryIfNeeded(rawQuery) {
+  const lower = rawQuery.toLowerCase().trim();
+  if (!lower) return '';
+  for (const [ukWord, enWord] of Object.entries(UK_GAME_QUERY_MAP)) {
+    if (lower === ukWord || lower.startsWith(`${ukWord} `)) {
+      return lower.replace(ukWord, enWord);
+    }
+  }
+  return rawQuery;
+}
 
 export default function LiveSearch({ onAddGame, mode = 'games' }) {
   const { t } = useTranslation();
@@ -106,7 +42,7 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
 
   const [query, setQuery] = useState('');
   const [selectedGenre, setSelectedGenre] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState(isMovies ? 'all' : '');
+  const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedYear, setSelectedYear] = useState('');
   const [selectedSort, setSelectedSort] = useState('popular');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -114,22 +50,88 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
   const [results, setResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
-
+  const [hasSearchedWithFilter, setHasSearchedWithFilter] = useState(false);
   const wrapperRef = useRef(null);
-  const requestIdRef = useRef(0); // щоб стара відповідь не перезаписала нову
 
-  const genreList = isMovies ? MOVIE_GENRES : GAME_GENRES;
-  const categoryList = isMovies ? MOVIE_CATEGORIES : GAME_CATEGORIES;
+  const gameGenres = useMemo(() => [
+    { id: '', label: t('genre_all') },
+    { id: 'action', label: t('genre_action') },
+    { id: 'role-playing-games-rpg', label: t('genre_rpg') },
+    { id: 'shooter', label: t('genre_shooter') },
+    { id: 'adventure', label: t('genre_adventure') },
+    { id: 'tag:horror', label: t('genre_horror') },
+    { id: 'strategy', label: t('genre_strategy') },
+    { id: 'indie', label: t('genre_indie') },
+    { id: 'puzzle', label: t('genre_puzzle') },
+    { id: 'racing', label: t('genre_racing') },
+    { id: 'sports', label: t('genre_sports') },
+    { id: 'simulation', label: t('genre_sim') },
+    { id: 'fighting', label: t('genre_fighting') }
+  ], [t]);
 
+  const movieGenres = useMemo(() => [
+    { id: '', label: t('genre_all') },
+    { id: '28', label: t('genre_action') },
+    { id: '18', label: t('genre_drama') },
+    { id: '878', label: t('genre_scifi') },
+    { id: '53', label: t('genre_thriller') },
+    { id: '27', label: t('genre_horror') },
+    { id: '35', label: t('genre_comedy') },
+    { id: '12', label: t('genre_adventure') },
+    { id: '80', label: t('genre_crime') },
+    { id: '9648', label: t('genre_mystery') },
+    { id: '16', label: t('genre_animation') },
+    { id: '14', label: t('genre_fantasy') }
+  ], [t]);
+
+  const gameCategories = useMemo(() => [
+    { id: '', label: t('cat_all') },
+    { id: 'survival', label: t('cat_survival') },
+    { id: 'open-world', label: t('cat_open_world') },
+    { id: 'co-op', label: t('cat_coop') },
+    { id: 'story-rich', label: t('cat_story') },
+    { id: 'cyberpunk', label: t('cat_cyberpunk') },
+    { id: 'dark-fantasy', label: t('cat_dark_fantasy') },
+    { id: 'post-apocalyptic', label: t('cat_post_apoc') },
+    { id: 'zombies', label: t('cat_zombies') }
+  ], [t]);
+
+  const movieCategories = useMemo(() => [
+    { id: '', label: t('cat_all') },
+    { id: 'movie', label: t('cat_movies_only') },
+    { id: 'series', label: t('cat_series_only') },
+    { id: 'anime', label: t('cat_anime_only') }
+  ], [t]);
+
+  const yearOptions = useMemo(() => [
+    { id: '', label: t('year_all') },
+    { id: '2026', label: '2026' },
+    { id: '2025', label: '2025' },
+    { id: '2024', label: '2024' },
+    { id: '2023', label: '2023' },
+    { id: '2022', label: '2022' },
+    { id: '2021', label: '2021' },
+    { id: '2020', label: '2020' },
+    { id: '2015-2019', label: '2015 – 2019' },
+    { id: '2010-2014', label: '2010 – 2014' },
+    { id: '2000s', label: '2000 – 2009' },
+    { id: 'classic', label: t('year_classic') }
+  ], [t]);
+
+  const sortOptions = useMemo(() => [
+    { id: 'popular', label: t('sort_popular') },
+    { id: 'rating', label: t('sort_rating') },
+    { id: 'newest', label: t('sort_newest') }
+  ], [t]);
+
+  const genreList = isMovies ? movieGenres : gameGenres;
+  const categoryList = isMovies ? movieCategories : gameCategories;
   const activeFiltersCount =
     (selectedGenre ? 1 : 0) +
-    (selectedCategory && selectedCategory !== 'all' ? 1 : 0) +
+    (selectedCategory ? 1 : 0) +
     (selectedYear ? 1 : 0) +
     (selectedSort !== 'popular' ? 1 : 0);
 
-  const accentText = isMovies ? 'text-rose-400' : 'text-indigo-400';
-
-  // Закриття списків при кліку поза компонентом
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
@@ -141,117 +143,74 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Скидання стану при перемиканні ігри <-> кіно
   useEffect(() => {
     setQuery('');
     setSelectedGenre('');
-    setSelectedCategory(mode === 'movies' ? 'all' : '');
+    setSelectedCategory('');
     setSelectedYear('');
     setSelectedSort('popular');
     setResults([]);
     setIsOpen(false);
     setIsFilterOpen(false);
+    setHasSearchedWithFilter(false);
   }, [mode]);
 
-  const executeSearch = async (overrideParams = {}) => {
-    const qVal = (overrideParams.query !== undefined ? overrideParams.query : query).trim();
-    const gVal = overrideParams.genre !== undefined ? overrideParams.genre : selectedGenre;
-    const cVal = overrideParams.category !== undefined ? overrideParams.category : selectedCategory;
-    const yVal = overrideParams.year !== undefined ? overrideParams.year : selectedYear;
-    const sVal = overrideParams.sort !== undefined ? overrideParams.sort : selectedSort;
+  const executeSearch = async (overrideOpenResults = false) => {
+    const trimmed = query.trim();
+    const hasFilters = Boolean(selectedGenre || selectedCategory || selectedYear);
 
-    const hasFilters = Boolean(gVal || (cVal && cVal !== 'all') || yVal);
-    if (qVal.length < 2 && !hasFilters) {
+    if (trimmed.length < 2 && !hasFilters) {
       setResults([]);
       setIsSearching(false);
       return;
     }
 
-    const currentRequestId = ++requestIdRef.current;
     setIsSearching(true);
-
     try {
       const endpoint = isMovies ? '/api/items/search-media' : '/api/items/search';
       const params = new URLSearchParams();
-
-      const mappedKeyword = UA_SEARCH_MAP[qVal.toLowerCase()];
-      let usedMapping = false;
-
-      if (mappedKeyword) {
-        if (isMovies) {
-          if (mappedKeyword.movieGenre && !gVal) {
-            params.set('genre', mappedKeyword.movieGenre);
-            usedMapping = true;
-          }
-        } else {
-          if (mappedKeyword.genre && !gVal) {
-            params.set('genre', mappedKeyword.genre);
-            usedMapping = true;
-          }
-          if (mappedKeyword.category && !cVal) {
-            params.set('category', mappedKeyword.category);
-            usedMapping = true;
-          }
-        }
+      if (trimmed.length >= 2) {
+        const finalQuery = isMovies ? trimmed : translateGameQueryIfNeeded(trimmed);
+        params.set('q', finalQuery);
       }
-
-      // Якщо слово не вдалося перетворити на жанр — шукаємо як звичайний текст
-      if (!usedMapping && qVal.length >= 2) {
-        params.set('q', qVal);
-      }
-
-      if (gVal) params.set('genre', gVal);
-      if (cVal && cVal !== 'all') params.set('category', cVal);
-      if (yVal) params.set('year', yVal);
-      if (sVal) params.set('sort', sVal);
+      if (selectedGenre) params.set('genre', selectedGenre);
+      if (selectedCategory) params.set('category', selectedCategory);
+      if (selectedYear) params.set('year', selectedYear);
+      if (selectedSort) params.set('sort', selectedSort);
 
       const res = await axios.get(`${endpoint}?${params.toString()}`);
-
-      // Ігноруємо застарілу відповідь, якщо вже пішов новіший запит
-      if (currentRequestId !== requestIdRef.current) return;
-
       setResults(Array.isArray(res.data) ? res.data : []);
-      setIsOpen(true);
+      setHasSearchedWithFilter(true);
+      if (overrideOpenResults || !isFilterOpen) {
+        setIsOpen(true);
+      }
     } catch (err) {
-      if (currentRequestId !== requestIdRef.current) return;
       setResults([]);
     } finally {
-      if (currentRequestId === requestIdRef.current) {
-        setIsSearching(false);
-      }
+      setIsSearching(false);
     }
   };
 
-  // Живий пошук під час введення тексту (коли вікно фільтра закрите)
   useEffect(() => {
-    if (isFilterOpen) return;
-
     const trimmed = query.trim();
     if (trimmed.length < 2) {
-      if (!selectedGenre && (!selectedCategory || selectedCategory === 'all') && !selectedYear) {
+      if (!selectedGenre && !selectedCategory && !selectedYear) {
         setResults([]);
+        setIsOpen(false);
       }
       return;
     }
 
     const timer = setTimeout(() => {
-      executeSearch();
+      executeSearch(false);
     }, 350);
 
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
   const handleApplyFilterButton = () => {
     setIsFilterOpen(false);
-    executeSearch();
-  };
-
-  const resetSearchFilters = () => {
-    setSelectedGenre('');
-    setSelectedCategory(isMovies ? 'all' : '');
-    setSelectedYear('');
-    setSelectedSort('popular');
+    executeSearch(true);
   };
 
   const handleSelect = (item, targetStatus) => {
@@ -261,25 +220,29 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
     setIsOpen(false);
   };
 
-  const selectClass =
-    'w-full bg-black/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500';
+  const resetSearchFilters = () => {
+    setSelectedGenre('');
+    setSelectedCategory('');
+    setSelectedYear('');
+    setSelectedSort('popular');
+    setHasSearchedWithFilter(false);
+    if (query.trim().length < 2) {
+      setResults([]);
+      setIsOpen(false);
+    }
+  };
 
   return (
-    <div ref={wrapperRef} className="relative z-50 w-full">
-      {/* Рядок пошуку */}
+    <div ref={wrapperRef} className="relative max-w-2xl mx-auto mb-8 z-30">
       <div className="relative flex items-center">
-        <Search className={`w-5 h-5 absolute left-4 pointer-events-none ${accentText}`} />
-
+        <Search className={`w-5 h-5 absolute left-4 pointer-events-none ${isMovies ? 'text-rose-400' : 'text-indigo-400'}`} />
         <input
           type="text"
           value={query}
           onFocus={() => {
             if (results.length > 0 && !isFilterOpen) setIsOpen(true);
           }}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            if (isFilterOpen) setIsFilterOpen(false);
-          }}
+          onChange={(e) => setQuery(e.target.value)}
           placeholder={isMovies ? t('search_movies_placeholder') : t('search_placeholder')}
           className={`w-full bg-[#0b0b10]/95 backdrop-blur-md border rounded-2xl pl-12 pr-36 py-3.5 text-xs sm:text-sm text-white placeholder-gray-500 focus:outline-none transition-all shadow-xl ${
             isMovies
@@ -289,9 +252,11 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
         />
 
         <div className="absolute right-2 flex items-center gap-1.5">
-          {isSearching && <Loader2 className={`w-4 h-4 animate-spin ${accentText}`} />}
+          {isSearching && (
+            <Loader2 className={`w-4 h-4 animate-spin ${isMovies ? 'text-rose-400' : 'text-indigo-400'}`} />
+          )}
 
-          {(query || activeFiltersCount > 0 || results.length > 0) && !isSearching && (
+          {(query || activeFiltersCount > 0) && !isSearching && (
             <button
               type="button"
               onClick={() => {
@@ -301,7 +266,7 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
                 setIsOpen(false);
               }}
               className="text-gray-400 hover:text-white p-1.5 rounded-lg"
-              title="Очистити все"
+              title={t('filter_reset')}
             >
               <X className="w-4 h-4" />
             </button>
@@ -310,13 +275,11 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
           <button
             type="button"
             onClick={() => {
-              setIsFilterOpen((prev) => {
-                const next = !prev;
-                if (next) setIsOpen(false);
-                return next;
-              });
+              const nextState = !isFilterOpen;
+              setIsFilterOpen(nextState);
+              if (nextState) setIsOpen(false);
             }}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
               activeFiltersCount > 0 || isFilterOpen
                 ? isMovies
                   ? 'bg-rose-600 text-white border-rose-400'
@@ -325,7 +288,7 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
             }`}
           >
             <SlidersHorizontal className="w-3.5 h-3.5" />
-            <span>Фільтр</span>
+            <span className="hidden sm:inline">{t('filter_btn')}</span>
             {activeFiltersCount > 0 && (
               <span className="px-1.5 py-0.5 rounded-full bg-black/40 text-[10px] font-extrabold">
                 {activeFiltersCount}
@@ -335,74 +298,73 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
         </div>
       </div>
 
-      {/* Панель вибору жанру, категорії, року та кнопка "Знайти" */}
       {isFilterOpen && (
-        <div className="absolute right-0 mt-2 w-full sm:w-96 bg-[#111118] border border-white/15 rounded-2xl p-4 shadow-2xl z-50 space-y-3.5">
-          <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
-            <span className="text-xs sm:text-sm font-extrabold text-white">
-              {isMovies ? '🎬 Підбір кіно за параметрами' : '🎮 Підбір ігор за параметрами'}
+        <div className="absolute right-0 mt-2 w-full sm:w-80 bg-[#111118]/95 backdrop-blur-xl border border-white/15 rounded-2xl p-4 shadow-2xl z-40 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-white">
+              {isMovies ? t('filter_search_title_movies') : t('filter_search_title_games')}
             </span>
             {activeFiltersCount > 0 && (
               <button
                 type="button"
                 onClick={resetSearchFilters}
-                className="text-[11px] text-rose-400 hover:text-rose-300 font-bold"
+                className="text-[11px] text-gray-400 hover:text-white font-semibold"
               >
-                Скинути все
+                {t('filter_reset')}
               </button>
             )}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             <div>
-              <label className="block text-[11px] font-semibold text-gray-400 mb-1">Жанр</label>
+              <label className="block text-[11px] font-semibold text-gray-400 mb-1">{t('filter_genre')}</label>
               <select
                 value={selectedGenre}
                 onChange={(e) => setSelectedGenre(e.target.value)}
-                className={selectClass}
+                className="w-full bg-black/70 border border-white/10 rounded-xl px-2.5 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
               >
-                {genreList.map((g) => (
+                {genreList.map(g => (
                   <option key={g.id} value={g.id}>{g.label}</option>
                 ))}
               </select>
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-gray-400 mb-1">
-                {isMovies ? 'Формат кіно' : 'Категорія / Сеттинг'}
-              </label>
+              <label className="block text-[11px] font-semibold text-gray-400 mb-1">{t('filter_category')}</label>
               <select
                 value={selectedCategory}
                 onChange={(e) => setSelectedCategory(e.target.value)}
-                className={selectClass}
+                className="w-full bg-black/70 border border-white/10 rounded-xl px-2.5 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
               >
-                {categoryList.map((c) => (
+                {categoryList.map(c => (
                   <option key={c.id} value={c.id}>{c.label}</option>
                 ))}
               </select>
             </div>
+          </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             <div>
-              <label className="block text-[11px] font-semibold text-gray-400 mb-1">Рік випуску</label>
+              <label className="block text-[11px] font-semibold text-gray-400 mb-1">{t('filter_year')}</label>
               <select
                 value={selectedYear}
                 onChange={(e) => setSelectedYear(e.target.value)}
-                className={selectClass}
+                className="w-full bg-black/70 border border-white/10 rounded-xl px-2.5 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
               >
-                {YEAR_OPTIONS.map((y) => (
+                {yearOptions.map(y => (
                   <option key={y.id} value={y.id}>{y.label}</option>
                 ))}
               </select>
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-gray-400 mb-1">Сортування</label>
+              <label className="block text-[11px] font-semibold text-gray-400 mb-1">{t('filter_sort')}</label>
               <select
                 value={selectedSort}
                 onChange={(e) => setSelectedSort(e.target.value)}
-                className={selectClass}
+                className="w-full bg-black/70 border border-white/10 rounded-xl px-2.5 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
               >
-                {SORT_OPTIONS.map((s) => (
+                {sortOptions.map(s => (
                   <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
               </select>
@@ -412,42 +374,32 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
           <button
             type="button"
             onClick={handleApplyFilterButton}
-            className={`w-full py-2.5 rounded-xl text-xs sm:text-sm font-extrabold text-white flex items-center justify-center gap-2 shadow-lg transition-colors ${
+            className={`w-full py-2.5 rounded-xl text-xs font-extrabold text-white shadow-lg transition-colors flex items-center justify-center gap-2 ${
               isMovies ? 'bg-rose-600 hover:bg-rose-500' : 'bg-indigo-600 hover:bg-indigo-500'
             }`}
           >
-            <Search className="w-4 h-4" />
-            <span>{isMovies ? 'Знайти фільми та серіали' : 'Знайти ігри'}</span>
+            <Search className="w-3.5 h-3.5" />
+            <span>{isMovies ? t('filter_find_movies') : t('filter_find_games')}</span>
           </button>
         </div>
       )}
 
-      {/* Випадаючий список знайдених результатів */}
       {isOpen && !isFilterOpen && (
-        <div className="absolute left-0 right-0 mt-2 bg-[#0e0e14] border border-white/15 rounded-2xl shadow-2xl overflow-hidden divide-y divide-white/[0.06] max-h-96 overflow-y-auto z-50">
+        <div className="absolute left-0 right-0 mt-2 bg-[#0e0e14]/95 backdrop-blur-xl border border-white/15 rounded-2xl shadow-2xl overflow-hidden divide-y divide-white/[0.06] max-h-96 overflow-y-auto z-30">
           {results.length > 0 ? (
-            results.map((item, index) => (
+            results.map((item) => (
               <div
-                key={item.rawgId || item.tmdbId || `${item.title}-${index}`}
+                key={item.rawgId || item.title}
                 className="p-3 hover:bg-white/[0.04] flex items-center justify-between gap-3 transition-colors"
               >
                 <div className="flex items-center gap-3 min-w-0">
                   {item.imageUrl ? (
-                    <img
-                      src={item.imageUrl}
-                      alt={item.title}
-                      className="w-10 h-14 object-cover rounded-lg bg-black shrink-0 border border-white/10"
-                    />
+                    <img src={item.imageUrl} alt={item.title} className="w-10 h-14 object-cover rounded-lg bg-black shrink-0 border border-white/10" />
                   ) : (
                     <div className="w-10 h-14 rounded-lg bg-white/5 flex items-center justify-center shrink-0">
-                      {isMovies ? (
-                        <Film className="w-4 h-4 text-rose-400" />
-                      ) : (
-                        <Gamepad2 className="w-4 h-4 text-indigo-400" />
-                      )}
+                      {isMovies ? <Film className="w-4 h-4 text-rose-400" /> : <Gamepad2 className="w-4 h-4 text-indigo-400" />}
                     </div>
                   )}
-
                   <div className="min-w-0">
                     <div className="text-xs sm:text-sm font-bold text-white truncate">{item.title}</div>
                     <div className="text-[11px] text-gray-400 truncate">
@@ -467,7 +419,6 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
                   >
                     <Heart className="w-3.5 h-3.5" />
                   </button>
-
                   <button
                     type="button"
                     onClick={() => handleSelect(item, 'backlog')}
@@ -483,11 +434,11 @@ export default function LiveSearch({ onAddGame, mode = 'games' }) {
                 </div>
               </div>
             ))
-          ) : (
-            <div className="p-6 text-center text-xs text-gray-400">
-              За цими параметрами нічого не знайдено. Спробуй змінити рік або жанр!
+          ) : hasSearchedWithFilter && !isSearching ? (
+            <div className="p-5 text-center text-xs text-gray-400">
+              {t('filter_empty_results')}
             </div>
-          )}
+          ) : null}
         </div>
       )}
     </div>

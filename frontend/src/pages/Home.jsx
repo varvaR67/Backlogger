@@ -1,3 +1,4 @@
+// frontend/src/pages/Home.jsx
 import { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -19,6 +20,30 @@ const AVATAR_PRESETS = [
   { id: 'sword', label: 'Мисливець на босів', icon: Sword, gradient: 'from-rose-500 to-red-700' },
   { id: 'shield', label: 'Страж колекції', icon: Shield, gradient: 'from-emerald-400 to-teal-600' },
 ];
+
+const ALLOWED_AVATAR_DOMAINS = [
+  'steamstatic.com',
+  'akamaihd.net',
+  'gravatar.com',
+  'githubusercontent.com',
+  'imgur.com',
+  'discordapp.com',
+  'googleusercontent.com',
+  'tmdb.org',
+  'rawg.io'
+];
+
+function isSafeAvatarUrl(val) {
+  if (typeof val !== 'string' || !val.startsWith('https://')) return false;
+  try {
+    const parsed = new URL(val);
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return ALLOWED_AVATAR_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    return false;
+  }
+}
 
 const ACCENT_THEMES = [
   { id: 'indigo', label: 'Індиго', ring: 'border-indigo-400/40', badge: 'bg-indigo-500/20 text-indigo-300', glow: 'from-indigo-600/30 to-purple-600/20' },
@@ -155,8 +180,8 @@ function getRatingColorStyles(ratingVal) {
   return { color, textShadow: `0 0 22px ${glow}, 0 0 8px ${glow}`, accentHex: color, percent: Math.round(ratio * 100) };
 }
 
-// Ізольований компонент живого таймера сесії (запобігає щосекундному ререндеру всього Home)
 function LiveSessionTimer({ activeSession, onStop }) {
+  const { t } = useTranslation();
   const [elapsedSeconds, setElapsedSeconds] = useState(() =>
     activeSession ? Math.max(0, Math.floor((Date.now() - activeSession.startTime) / 1000)) : 0
   );
@@ -199,17 +224,16 @@ function LiveSessionTimer({ activeSession, onStop }) {
         className="px-3.5 py-1.5 rounded-full bg-red-500 hover:bg-red-600 text-white text-xs font-extrabold flex items-center gap-1.5 transition-all"
       >
         <Square className="w-3 h-3 fill-current" />
-        <span>Стоп</span>
+        <span>{t('btn_stop')}</span>
       </button>
     </motion.div>
   );
 }
 
 function AiModal({ onClose, mode = 'games' }) {
+  const { t, lang } = useTranslation();
   const isCinema = mode === 'movies';
-  const initialGreeting = isCinema
-    ? 'Привіт! Я твій ШІ-Кінопорадник. Бачу твою колекцію та оцінки — запитай мене про сюжет будь-якого фільму чи серіалу, попроси пораду на вечір або розбір твого кіносмаку!'
-    : 'Привіт! Я твій ігровий ШІ-Порадник. Я вже просканував твій беклог, награні години та оцінки — питай, що запустити сьогодні ввечері, про що будь-яка гра або попроси чесний розбір твого смаку!';
+  const initialGreeting = isCinema ? t('ai_greeting_movies') : t('ai_greeting_games');
 
   const [aiMessages, setAiMessages] = useState([
     { role: 'ai', text: initialGreeting }
@@ -217,6 +241,12 @@ function AiModal({ onClose, mode = 'games' }) {
   const [aiInput, setAiInput] = useState('');
   const [isAiThinking, setIsAiThinking] = useState(false);
   const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    setAiMessages((prev) =>
+      prev.length <= 1 ? [{ role: 'ai', text: initialGreeting }] : prev
+    );
+  }, [initialGreeting]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -235,29 +265,33 @@ function AiModal({ onClose, mode = 'games' }) {
       const res = await axios.post('/api/items/ai-assistant', {
         prompt: textToSend,
         mode,
-        history: updatedHistory.slice(1) // Передаємо всю історію розмови без стартового привітання
+        lang,
+        history: updatedHistory.slice(1)
       });
       setAiMessages(prev => [...prev, { role: 'ai', text: res.data.reply }]);
     } catch (error) {
-      setAiMessages(prev => [...prev, { role: 'ai', text: 'Не вдалося зʼєднатися з сервером ШІ. Перевір, чи запущено бекенд.' }]);
+      const errMsg = error.response?.data?.message || 'Не вдалося зʼєднатися з сервером ШІ. Перевір, чи запущено бекенд.';
+      setAiMessages(prev => [...prev, { role: 'ai', text: errMsg }]);
     } finally {
       setIsAiThinking(false);
     }
   };
 
-  const quickQuestions = isCinema
-    ? [
-        'Що подивитись сьогодні ввечері?',
-        'Проаналізуй мій кіносмак',
-        'Про що фільм Інтерстеллар?',
-        'Порадь трилер із крутим фіналом'
-      ]
-    : [
-        'Що пограти сьогодні ввечері?',
-        'Проаналізуй мій ігровий смак',
-        'Про що гра S.T.A.L.K.E.R. 2?',
-        'Що пройти з мого беклогу найпершим?'
-      ];
+  const quickQuestions = useMemo(() => {
+    if (lang === 'en') {
+      return isCinema
+        ? ['What to watch tonight?', 'Analyze my movie taste', 'What is Interstellar about?', 'Recommend a thriller with a twist']
+        : ['What to play tonight?', 'Analyze my gaming taste', 'How long to beat Far Cry 5?', 'What to play first from my backlog?'];
+    }
+    if (lang === 'ru') {
+      return isCinema
+        ? ['Что посмотреть сегодня вечером?', 'Проанализируй мой киновкус', 'О чём фильм Интерстеллар?', 'Посоветуй триллер с крутым финалом']
+        : ['Во что поиграть сегодня вечером?', 'Проанализируй мой игровой вкус', 'Сколько часов занимает Far Cry 5?', 'Что пройти из бэклога первым?'];
+    }
+    return isCinema
+      ? ['Що подивитись сьогодні ввечері?', 'Проаналізуй мій кіносмак', 'Про що фільм Інтерстеллар?', 'Порадь трилер із крутим фіналом']
+      : ['Що пограти сьогодні ввечері?', 'Проаналізуй мій ігровий смак', 'Скільки годин займає Far Cry 5?', 'Що пройти з мого беклогу найпершим?'];
+  }, [isCinema, lang]);
 
   const renderFormattedText = (text = '') => {
     return text.split('\n').map((line, lineIdx) => {
@@ -284,8 +318,8 @@ function AiModal({ onClose, mode = 'games' }) {
               <Bot className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white">{isCinema ? 'ШІ-Кінопорадник' : 'ШІ-Порадник Ігор'}</h3>
-              <p className="text-[11px] text-gray-400">Памʼятає контекст розмови та знає твої оцінки</p>
+              <h3 className="text-base font-bold text-white">{isCinema ? t('nav_ai_cinema') : t('nav_ai')}</h3>
+              <p className="text-[11px] text-gray-400">{t('ai_sub')}</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5">
@@ -294,9 +328,8 @@ function AiModal({ onClose, mode = 'games' }) {
                 type="button"
                 onClick={() => setAiMessages([{ role: 'ai', text: initialGreeting }])}
                 className="text-[11px] text-gray-400 hover:text-white px-2.5 py-1 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
-                title="Очистити діалог"
               >
-                Очистити
+                {t('ai_clear')}
               </button>
             )}
             <button onClick={onClose} className="text-gray-400 hover:text-white p-1"><X className="w-5 h-5" /></button>
@@ -314,7 +347,7 @@ function AiModal({ onClose, mode = 'games' }) {
           {isAiThinking && (
             <div className={`text-xs animate-pulse px-2 flex items-center gap-2 ${isCinema ? 'text-rose-300' : 'text-indigo-300'}`}>
               <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              <span>Аналізую колекцію та шукаю деталі...</span>
+              <span>{t('ai_thinking')}</span>
             </div>
           )}
           <div ref={messagesEndRef} />
@@ -339,9 +372,10 @@ function AiModal({ onClose, mode = 'games' }) {
         <form onSubmit={(e) => { e.preventDefault(); handleAskAi(); }} className="p-4 border-t border-white/10 flex gap-2">
           <input
             type="text"
+            maxLength={500}
             value={aiInput}
             onChange={(e) => setAiInput(e.target.value)}
-            placeholder={isCinema ? 'Запитай про фільм, акторів або що глянути...' : 'Запитай про гру, сюжет або що запустити...'}
+            placeholder={isCinema ? t('ai_ph_movies') : t('ai_ph_games')}
             className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-indigo-500/60"
           />
           <button
@@ -389,13 +423,19 @@ export default function Home({ username, onLogout }) {
 
   const [showSteamPromo, setShowSteamPromo] = useState(false);
   const [profileLoaded, setProfileLoaded] = useState(false);
-  const [itemsLoaded, setItemsLoaded] = useState(false);
-  const unlockedAchRef = useRef(null);
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [achTab, setAchTab] = useState('games');
-  const [profile, setProfile] = useState({ avatar: 'cyber', customTitle: 'Дослідник всесвітів', accentColor: 'indigo', favoriteGameId: '', steamSynced: false, steamId: '' });
+  const [profile, setProfile] = useState({
+    _id: '',
+    avatar: 'cyber',
+    customTitle: 'Дослідник всесвітів',
+    accentColor: 'indigo',
+    favoriteGameId: '',
+    steamSynced: false,
+    steamId: ''
+  });
   const [customAvatarUrl, setCustomAvatarUrl] = useState('');
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
@@ -438,13 +478,11 @@ export default function Home({ username, onLogout }) {
   const [leaderboard, setLeaderboard] = useState([]);
   const [isLoadingLeaderboard, setIsLoadingLeaderboard] = useState(false);
 
-  // На старті завантажуємо тільки особисту колекцію та профіль користувача
   useEffect(() => {
     fetchItems();
     fetchProfile();
   }, []);
 
-  // Ліниве завантаження даних спільноти тільки при переході на вкладку "Спільнота"
   useEffect(() => {
     if (activeView === 'community') {
       fetchFeed();
@@ -473,13 +511,11 @@ export default function Home({ username, onLogout }) {
     setLocalSearch('');
   }, [activeView]);
 
-const fetchItems = async () => {
+  const fetchItems = async () => {
     try {
       const res = await axios.get('/api/items');
-      setItems(res.data);
-    } catch (error) {} finally {
-      setItemsLoaded(true);
-    }
+      setItems(Array.isArray(res.data) ? res.data : []);
+    } catch (error) {}
   };
 
   const fetchFeed = async () => {
@@ -525,6 +561,7 @@ const fetchItems = async () => {
       const res = await axios.get('/api/items/profile');
       if (res.data) {
         setProfile({
+          _id: res.data._id || '',
           avatar: res.data.avatar || 'cyber',
           customTitle: res.data.customTitle || 'Дослідник всесвітів',
           accentColor: res.data.accentColor || 'indigo',
@@ -532,7 +569,7 @@ const fetchItems = async () => {
           steamSynced: Boolean(res.data.steamSynced),
           steamId: res.data.steamId || ''
         });
-        if (res.data.avatar?.startsWith('http')) setCustomAvatarUrl(res.data.avatar);
+        if (isSafeAvatarUrl(res.data.avatar)) setCustomAvatarUrl(res.data.avatar);
       }
     } catch (e) {} finally {
       setProfileLoaded(true);
@@ -602,6 +639,7 @@ const fetchItems = async () => {
   }, [selectedGenre, selectedYearRange, selectedMediaType, sortBy, localSearch]);
 
   const stats = useMemo(() => {
+    const ownedGames = gameItems.filter(i => i.status !== 'wishlist');
     const wishlist = gameItems.filter(i => i.status === 'wishlist').length;
     const backlog = gameItems.filter(i => i.status === 'backlog').length;
     const playing = gameItems.filter(i => i.status === 'playing').length;
@@ -610,24 +648,40 @@ const fetchItems = async () => {
     const ownedTotal = backlog + playing + paused + completed;
     const activeOwned = backlog + playing + completed;
     const completionRate = activeOwned > 0 ? Math.round((completed / activeOwned) * 100) : 0;
-    const totalHours = Math.round(gameItems.reduce((acc, item) => acc + (Number(item.playtime) || 0), 0) * 10) / 10;
-    const maxGameHours = gameItems.reduce((max, item) => Math.max(max, Number(item.playtime) || 0), 0);
-    const ratedItems = gameItems.filter(i => i.personalRating);
-    const perfectTenCount = gameItems.filter(i => Number(i.personalRating) >= 9.5).length;
-    const commentedItems = gameItems.filter(i => i.comment && i.comment.trim().length > 0);
+    const totalHours = Math.round(ownedGames.reduce((acc, item) => acc + (Number(item.playtime) || 0), 0) * 10) / 10;
+    const maxGameHours = ownedGames.reduce((max, item) => Math.max(max, Number(item.playtime) || 0), 0);
+    const ratedItems = ownedGames.filter(i => i.personalRating);
+    const perfectTenCount = ownedGames.filter(i => Number(i.personalRating) >= 9.5).length;
+    const commentedItems = ownedGames.filter(i => i.comment && i.comment.trim().length > 0);
     const avgRating = ratedItems.length > 0 ? (ratedItems.reduce((acc, i) => acc + Number(i.personalRating), 0) / ratedItems.length).toFixed(1) : '—';
 
-    const allOwnedCount = items.filter(i => i.status !== 'wishlist').length;
-    const allCompletedCount = items.filter(i => i.status === 'completed').length;
-    const allRatedCount = items.filter(i => i.personalRating).length;
-    const allCommentedCount = items.filter(i => i.comment && i.comment.trim().length > 0).length;
-    const allHours = Math.round(items.reduce((acc, item) => acc + (Number(item.playtime) || 0), 0) * 10) / 10;
-    const xp = (allOwnedCount * 40) + (allCompletedCount * 120) + (allRatedCount * 30) + (allCommentedCount * 25) + Math.round(allHours * 5);
+    // Єдина формула XP (точно як на бекенді в /profile та /leaderboard)
+    const allOwnedItems = items.filter(i => i.status !== 'wishlist');
+    const allOwnedCount = allOwnedItems.length;
+    const allCompletedCount = allOwnedItems.filter(i => i.status === 'completed').length;
+    const allRatedCount = allOwnedItems.filter(i => i.personalRating != null && Number(i.personalRating) > 0).length;
+    const allCommentedCount = allOwnedItems.filter(i => i.comment && i.comment.trim().length > 0).length;
+    const allLikesReceived = allOwnedItems.reduce((acc, i) => acc + (Array.isArray(i.likes) ? i.likes.length : 0), 0);
+    const allHours = Math.round(allOwnedItems.reduce((acc, item) => acc + (Number(item.playtime) || 0), 0) * 10) / 10;
+    const xp =
+      (allOwnedCount * 40) +
+      (allCompletedCount * 120) +
+      (allRatedCount * 30) +
+      (allCommentedCount * 25) +
+      (allLikesReceived * 15) +
+      Math.round(allHours * 5);
     const level = Math.floor(xp / 200) + 1;
-    return { ownedTotal, wishlist, backlog, playing, paused, completed, completionRate, totalHours, maxGameHours, ratedCount: ratedItems.length, perfectTenCount, commentedCount: commentedItems.length, avgRating, xp, level, currentLevelXp: xp % 200, xpProgress: Math.round(((xp % 200) / 200) * 100) };
+
+    return {
+      ownedTotal, wishlist, backlog, playing, paused, completed, completionRate,
+      totalHours, maxGameHours, ratedCount: ratedItems.length, perfectTenCount,
+      commentedCount: commentedItems.length, avgRating, xp, level,
+      currentLevelXp: xp % 200, xpProgress: Math.round(((xp % 200) / 200) * 100)
+    };
   }, [gameItems, items]);
 
   const movieStats = useMemo(() => {
+    const ownedMovies = movieItems.filter(i => i.status !== 'wishlist');
     const wishlist = movieItems.filter(i => i.status === 'wishlist').length;
     const backlog = movieItems.filter(i => i.status === 'backlog').length;
     const playing = movieItems.filter(i => i.status === 'playing').length;
@@ -636,13 +690,12 @@ const fetchItems = async () => {
     const ownedTotal = backlog + playing + paused + completed;
     const activeOwned = backlog + playing + completed;
     const completionRate = activeOwned > 0 ? Math.round((completed / activeOwned) * 100) : 0;
-    const totalHours = Math.round(movieItems.reduce((acc, item) => acc + (Number(item.playtime) || 0), 0) * 10) / 10;
-    const ratedItems = movieItems.filter(i => i.personalRating);
-    const perfectTenCount = movieItems.filter(i => Number(i.personalRating) >= 9.5).length;
-    const commentedCount = movieItems.filter(i => i.comment && i.comment.trim().length > 0).length;
+    const totalHours = Math.round(ownedMovies.reduce((acc, item) => acc + (Number(item.playtime) || 0), 0) * 10) / 10;
+    const ratedItems = ownedMovies.filter(i => i.personalRating);
+    const perfectTenCount = ownedMovies.filter(i => Number(i.personalRating) >= 9.5).length;
+    const commentedCount = ownedMovies.filter(i => i.comment && i.comment.trim().length > 0).length;
 
-    // Підрахунок серій з урахуванням попередніх сезонів та завершених серіалів
-    const totalEpisodesWatched = movieItems.reduce((acc, item) => {
+    const totalEpisodesWatched = ownedMovies.reduce((acc, item) => {
       if (item.mediaType !== 'series' && item.mediaType !== 'anime') return acc;
       const season = Math.max(1, Number(item.currentSeason) || 1);
       const ep = Math.max(0, Number(item.currentEpisode) || 0);
@@ -654,7 +707,7 @@ const fetchItems = async () => {
       return acc + currentTotal;
     }, 0);
 
-    const animeCount = movieItems.filter(i => i.mediaType === 'anime' && i.status !== 'wishlist').length;
+    const animeCount = ownedMovies.filter(i => i.mediaType === 'anime').length;
     const avgRating = ratedItems.length > 0 ? (ratedItems.reduce((acc, i) => acc + Number(i.personalRating), 0) / ratedItems.length).toFixed(1) : '—';
     return {
       ownedTotal, wishlist, backlog, playing, paused, completed, completionRate,
@@ -703,7 +756,7 @@ const fetchItems = async () => {
 
   const unlockedCount = achievements.filter(a => a.unlocked).length;
   const unlockedMovieCount = movieAchievements.filter(a => a.unlocked).length;
-  const activeAccent = ACCENT_THEMES.find(t => t.id === profile.accentColor) || ACCENT_THEMES[0];
+  const activeAccent = ACCENT_THEMES.find(tItem => tItem.id === profile.accentColor) || ACCENT_THEMES[0];
   const favoriteGame = items.find(i => i._id === profile.favoriteGameId);
 
   const openProfileWithTab = (preferredTab) => {
@@ -713,7 +766,7 @@ const fetchItems = async () => {
 
   const tierGroups = useMemo(() => {
     const sourceList = isCinemaView ? movieItems : gameItems;
-    const rated = sourceList.filter(i => i.personalRating);
+    const rated = sourceList.filter(i => i.personalRating && i.status !== 'wishlist');
     return [
       { tier: 'S', label: 'Шедеври (9–10)', color: 'from-amber-400 to-orange-500 text-black', games: rated.filter(i => i.personalRating >= 9) },
       { tier: 'A', label: 'Відмінні (8–8.5)', color: 'from-emerald-400 to-teal-500 text-black', games: rated.filter(i => i.personalRating >= 8 && i.personalRating < 9) },
@@ -725,7 +778,6 @@ const fetchItems = async () => {
 
   const allPlaylists = useMemo(() => [...userPlaylists, ...DEFAULT_PLAYLISTS], [userPlaylists]);
 
-  // Мемоїзовані списки для вкладки Спільноти
   const filteredPlaylists = useMemo(
     () => allPlaylists.filter(p => (p.category || 'games') === communityTab),
     [allPlaylists, communityTab]
@@ -742,7 +794,9 @@ const fetchItems = async () => {
   );
 
   const renderUserAvatar = (avatarVal, nameVal, sizeClass = 'w-7 h-7', iconClass = 'w-3.5 h-3.5') => {
-    if (avatarVal?.startsWith('http')) return <img src={avatarVal} alt={nameVal} className={`${sizeClass} rounded-full object-cover border border-white/20 shrink-0`} />;
+    if (isSafeAvatarUrl(avatarVal)) {
+      return <img src={avatarVal} alt={nameVal} referrerPolicy="no-referrer" className={`${sizeClass} rounded-full object-cover border border-white/20 shrink-0`} />;
+    }
     const preset = AVATAR_PRESETS.find(p => p.id === avatarVal) || AVATAR_PRESETS[0];
     const IconComp = preset.icon;
     return <div className={`${sizeClass} rounded-full bg-gradient-to-tr ${preset.gradient} flex items-center justify-center border border-white/25 shadow-sm shrink-0`}><IconComp className={`${iconClass} text-white`} /></div>;
@@ -759,6 +813,7 @@ const fetchItems = async () => {
     try {
       const res = await axios.post(`/api/items/${reviewId}/like`);
       setFeedItems(prev => prev.map(f => f._id === reviewId ? res.data : f));
+      setItems(prev => prev.map(i => i._id === reviewId ? res.data : i));
     } catch (e) {}
   };
 
@@ -832,17 +887,32 @@ const fetchItems = async () => {
   const handleSaveProfile = async (e) => {
     e.preventDefault();
     setIsSavingProfile(true);
-    const finalAvatar = customAvatarUrl.trim() ? customAvatarUrl.trim() : profile.avatar;
+    const trimmedCustom = customAvatarUrl.trim();
+    if (trimmedCustom && !isSafeAvatarUrl(trimmedCustom)) {
+      setIsSavingProfile(false);
+      return toast.error('Дозволені лише безпечні HTTPS-посилання (Steam, Gravatar, Imgur, GitHub)');
+    }
+    const finalAvatar = trimmedCustom ? trimmedCustom : profile.avatar;
     try {
       const res = await axios.put('/api/items/profile', { ...profile, avatar: finalAvatar });
-      setProfile(prev => ({ ...prev, avatar: res.data.avatar, customTitle: res.data.customTitle, accentColor: res.data.accentColor, favoriteGameId: res.data.favoriteGameId || '', steamSynced: Boolean(res.data.steamSynced) }));
+      setProfile(prev => ({
+        ...prev,
+        _id: res.data._id || prev._id,
+        avatar: res.data.avatar,
+        customTitle: res.data.customTitle,
+        accentColor: res.data.accentColor,
+        favoriteGameId: res.data.favoriteGameId || '',
+        steamSynced: Boolean(res.data.steamSynced)
+      }));
       toast.success('Профіль оновлено!');
       setIsProfileOpen(false);
       if (activeView === 'community') fetchLeaderboard();
-    } catch (e) {} finally { setIsSavingProfile(false); }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Не вдалося оновити профіль');
+    } finally { setIsSavingProfile(false); }
   };
 
-const handleAddGame = async (itemData, requestedStatus) => {
+  const handleAddGame = async (itemData, requestedStatus) => {
     const mediaType = itemData.mediaType || (isCinemaView ? 'movie' : 'game');
     const existing = items.find(item => item.title.toLowerCase() === itemData.title.toLowerCase() && (item.mediaType || 'game') === mediaType);
     if (existing) {
@@ -876,15 +946,19 @@ const handleAddGame = async (itemData, requestedStatus) => {
       if (activeView === 'community') {
         fetchFeed(); fetchTrending(); fetchLeaderboard();
       }
-    } catch (error) { toast.error('Не вдалося додати'); }
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Не вдалося додати');
+    }
   };
 
   const handleBulkImportTopMovies = async () => {
-    const toAdd = top100Movies.filter(m => !movieItems.some(existing => existing.title.toLowerCase() === m.title.toLowerCase())).slice(0, 10);
+    const toAdd = top100Movies
+      .filter(m => !movieItems.some(existing => existing.title.toLowerCase() === m.title.toLowerCase()))
+      .slice(0, 10);
     if (toAdd.length === 0) return toast.error('Ці фільми вже у твоїй колекції!');
-    toast.loading('Додаємо 10 культових фільмів...', { id: 'bulk' });
+    toast.loading(`Додаємо ${toAdd.length} культових фільмів...`, { id: 'bulk' });
     try {
-      const responses = await Promise.all(
+      const results = await Promise.allSettled(
         toAdd.map(m =>
           axios.post('/api/items', {
             title: m.title, mediaType: 'movie', imageUrl: m.imageUrl, releaseYear: m.releaseYear,
@@ -892,10 +966,19 @@ const handleAddGame = async (itemData, requestedStatus) => {
           })
         )
       );
-      const created = responses.map(r => r.data);
-      setItems(prev => [...created, ...prev]);
-      toast.success(`Додано ${created.length} хітів у Заплановане!`, { id: 'bulk', icon: '🎬' });
-    } catch (e) { toast.error('Помилка імпорту', { id: 'bulk' }); }
+      const created = results
+        .filter(r => r.status === 'fulfilled' && r.value?.data)
+        .map(r => r.value.data);
+
+      if (created.length > 0) {
+        setItems(prev => [...created, ...prev]);
+        toast.success(`Додано ${created.length} з ${toAdd.length} хітів у Заплановане!`, { id: 'bulk', icon: '🎬' });
+      } else {
+        toast.error('Не вдалося імпортувати фільми', { id: 'bulk' });
+      }
+    } catch (e) {
+      toast.error('Помилка імпорту', { id: 'bulk' });
+    }
   };
 
   const handleUpdateStatus = async (e, id, newStatus, itemTitle) => {
@@ -987,7 +1070,7 @@ const handleAddGame = async (itemData, requestedStatus) => {
     e.preventDefault();
     if (!selectedGame) return;
     setIsSavingDetails(true);
-    const finalPlaytime = Math.round(((Number(playtimeInput) || 0) + (Number(sessionAddInput) > 0 ? Number(sessionAddInput) : 0)) * 10) / 10;
+    const finalPlaytime = Math.min(100000, Math.round(((Number(playtimeInput) || 0) + (Number(sessionAddInput) > 0 ? Number(sessionAddInput) : 0)) * 10) / 10);
     try {
       const res = await axios.put(`/api/items/${selectedGame._id}`, {
         personalRating: ratingInput ? Number(ratingInput) : null, playtime: finalPlaytime, comment: commentInput,
@@ -1013,7 +1096,7 @@ const handleAddGame = async (itemData, requestedStatus) => {
     const targetGame = items.find(i => i._id === activeSession.gameId);
     if (!targetGame) { setActiveSession(null); return; }
     const addedHours = elapsedSec >= 10 ? Math.max(0.1, Math.round((elapsedSec / 3600) * 10) / 10) : 0;
-    const newTotal = Math.round(((Number(targetGame.playtime) || 0) + addedHours) * 10) / 10;
+    const newTotal = Math.min(100000, Math.round(((Number(targetGame.playtime) || 0) + addedHours) * 10) / 10);
     try {
       const res = await axios.put(`/api/items/${targetGame._id}`, { playtime: newTotal, status: 'playing' });
       setItems(prev => prev.map(item => item._id === targetGame._id ? res.data : item));
@@ -1060,8 +1143,8 @@ const handleAddGame = async (itemData, requestedStatus) => {
     }, 85);
   };
 
-const handleSupportProject = () => {
-    const jarUrl = "https://send.monobank.ua/jar/6DBycstjdj";
+  const handleSupportProject = () => {
+    const jarUrl = 'https://send.monobank.ua/jar/6DBycstjdj';
     window.open(jarUrl, '_blank', 'noopener,noreferrer');
   };
 
@@ -1112,7 +1195,6 @@ const handleSupportProject = () => {
         {activeSession && <LiveSessionTimer activeSession={activeSession} onStop={stopLiveSession} />}
       </AnimatePresence>
 
-      {/* Сповіщення-рекомендація підключити Steam через 12 секунд */}
       <AnimatePresence>
         {showSteamPromo && !profile.steamSynced && (
           <motion.div
@@ -1180,9 +1262,9 @@ const handleSupportProject = () => {
               }`}
             >
               <SlidersHorizontal className={`w-3.5 h-3.5 transition-transform duration-300 group-hover:rotate-90 ${isCinemaView ? 'text-rose-400' : 'text-cyan-400'}`} />
-              <span>Фільтри</span>
+              <span>{t('nav_filters')}</span>
               {activeFiltersCount > 0 && (
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${isCinemaView ? 'bg-rose-500 text-white' : 'bg-indigo-500 text-white'}`}>
+                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${isCinemaView ? 'bg-rose-500 text-white' : 'bg-indigo-500 text-white'}`}>
                   {activeFiltersCount}
                 </span>
               )}
@@ -1220,7 +1302,6 @@ const handleSupportProject = () => {
               <span>{profile.steamSynced ? t('nav_steam') : t('nav_steam_sync')}</span>
             </button>
 
-            {/* Плашка профілю + Перемикач мов прямо ПІД нею */}
             <div className="flex flex-col items-end gap-1.5">
               <div className={`flex items-center gap-3 bg-[#0b0b12]/90 p-1.5 pl-2.5 pr-4 rounded-full border ${activeAccent.ring} transition-all hover:border-white/30`}>
                 <button onClick={() => openProfileWithTab()} className="flex items-center gap-2 text-left">
@@ -1258,7 +1339,6 @@ const handleSupportProject = () => {
           </button>
         </nav>
 
-        {/* Мобільна шторка з усіма функціями включно з Тір-лістом */}
         <AnimatePresence>
           {isMobileMenuOpen && (
             <motion.div initial={{ opacity: 0, y: -16, height: 0 }} animate={{ opacity: 1, y: 0, height: 'auto' }} exit={{ opacity: 0, y: -16, height: 0 }} className="md:hidden overflow-hidden mb-6">
@@ -1269,7 +1349,7 @@ const handleSupportProject = () => {
                   <button onClick={() => { setActiveView('movies'); setIsMobileMenuOpen(false); }} className={`py-2.5 px-2 rounded-2xl text-[11px] font-semibold border ${activeView === 'movies' ? 'bg-rose-500/25 text-rose-200 border-rose-400/40' : 'bg-white/5 text-rose-200 border-white/10'}`}>{t('nav_movies')}</button>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
-                  <button onClick={() => { setIsMobileMenuOpen(false); setIsFilterModalOpen(true); }} className="py-2.5 px-2 rounded-2xl text-[11px] font-semibold bg-white/5 text-cyan-300 border border-white/10 flex items-center justify-center gap-1"><SlidersHorizontal className="w-3.5 h-3.5" /><span>Фільтри</span></button>
+                  <button onClick={() => { setIsMobileMenuOpen(false); setIsFilterModalOpen(true); }} className="py-2.5 px-2 rounded-2xl text-[11px] font-semibold bg-white/5 text-cyan-300 border border-white/10 flex items-center justify-center gap-1"><SlidersHorizontal className="w-3.5 h-3.5" /><span>{t('nav_filters')}</span></button>
                   <button onClick={() => { setIsMobileMenuOpen(false); setIsTierListOpen(true); }} className="py-2.5 px-2 rounded-2xl text-[11px] font-semibold bg-white/5 text-amber-200 border border-white/10 flex items-center justify-center gap-1"><LayoutGrid className="w-3.5 h-3.5 text-amber-400" /><span>{t('nav_tier')}</span></button>
                   <button onClick={() => { setIsMobileMenuOpen(false); setIsSteamModalOpen(true); }} className="py-2.5 px-2 rounded-2xl text-[11px] font-semibold bg-white/5 text-emerald-300 border border-white/10 flex items-center justify-center gap-1"><RefreshCw className="w-3.5 h-3.5" /><span>Steam</span></button>
                 </div>
@@ -1388,10 +1468,10 @@ const handleSupportProject = () => {
                         {isSeriesOrAnime && !isWishlistItem ? (
                           <div onClick={(e) => e.stopPropagation()} className="mb-2.5 bg-white/[0.03] border border-white/[0.08] rounded-xl p-2 flex items-center justify-between gap-1.5">
                             <span className="text-[10px] text-gray-300 font-medium truncate"><b className="text-amber-300">{item.currentSeason || 1} сез</b> • {item.currentEpisode || 0}{item.totalEpisodes ? `/${item.totalEpisodes}` : ''} сер</span>
-                            <button type="button" onClick={(e) => handleIncrementEpisode(e, item)} className="px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-200 hover:text-white text-[10px] font-extrabold">+1 серія</button>
+                            <button type="button" onClick={(e) => handleIncrementEpisode(e, item)} className="px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-200 hover:text-white text-[10px] font-extrabold">{t('plus_one_ep')}</button>
                           </div>
                         ) : (
-                          <button type="button" onClick={() => openGameDetails(item)} className="w-full mb-2.5 py-1.5 px-2.5 rounded-xl bg-white/[0.03] hover:bg-rose-500/20 border border-white/[0.07] text-[10px] text-gray-300 flex items-center justify-between">
+                          <button type="button" onClick={(e) => { e.stopPropagation(); openGameDetails(item); }} className="w-full mb-2.5 py-1.5 px-2.5 rounded-xl bg-white/[0.03] hover:bg-rose-500/20 border border-white/[0.07] text-[10px] text-gray-300 flex items-center justify-between">
                             <span>{t('btn_rate_movie')}</span><span className="text-rose-400 font-bold">+</span>
                           </button>
                         )}
@@ -1407,7 +1487,7 @@ const handleSupportProject = () => {
               </div>
             ) : (
               <div className="text-center py-14 px-4 bg-[#0b0b10] border border-white/[0.06] rounded-3xl">
-                <p className="text-gray-300 text-base font-bold mb-1">У цій категорії поки порожньо</p>
+                <p className="text-gray-300 text-base font-bold mb-1">{t('empty_cat')}</p>
                 <p className="text-gray-500 text-xs mb-5">Відкрий наш готовий каталог зі 100 найкращих фільмів світу!</p>
                 <button onClick={fetchTop100Movies} className="px-5 py-2.5 rounded-full bg-rose-600 hover:bg-rose-500 text-white text-xs font-extrabold inline-flex items-center gap-2">
                   <Trophy className="w-4 h-4" /><span>Відкрити Топ-100 популярних фільмів</span>
@@ -1504,7 +1584,7 @@ const handleSupportProject = () => {
                       <div className="p-3 sm:p-4 pt-3 -mt-3 flex flex-col flex-1 bg-[#0b0b10] relative z-20">
                         <h3 className="font-bold text-sm sm:text-base text-white mb-0.5 line-clamp-1 group-hover:text-indigo-300">{item.title}</h3>
                         <p className="text-[11px] text-gray-400 mb-2.5 line-clamp-1">{item.releaseYear ? `${item.releaseYear} • ` : ''}{item.genres?.join(', ') || 'Гра'}</p>
-                        <button type="button" onClick={() => openGameDetails(item)} className="w-full mb-2.5 py-1.5 px-2.5 rounded-xl bg-white/[0.03] hover:bg-indigo-500/20 border border-white/[0.07] text-[10px] text-gray-300 flex items-center justify-between">
+                        <button type="button" onClick={(e) => { e.stopPropagation(); openGameDetails(item); }} className="w-full mb-2.5 py-1.5 px-2.5 rounded-xl bg-white/[0.03] hover:bg-indigo-500/20 border border-white/[0.07] text-[10px] text-gray-300 flex items-center justify-between">
                           <span>{t('btn_rate_time')}</span><span className="text-indigo-400 font-bold">+</span>
                         </button>
                         <div onClick={(e) => e.stopPropagation()} className="mt-auto grid grid-cols-4 bg-black/60 rounded-xl p-0.5 border border-white/[0.07] gap-0.5">
@@ -1562,7 +1642,7 @@ const handleSupportProject = () => {
                 <div className="flex items-center justify-between mb-4 px-1 flex-wrap gap-2">
                   <h2 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2">
                     <Flame className={`w-5 h-5 ${communityTab === 'movies' ? 'text-rose-400' : 'text-emerald-400'}`} />
-                    <span>{communityTab === 'movies' ? 'Вибір кіноспільноти' : 'Вибір спільноти'}</span>
+                    <span>{communityTab === 'movies' ? 'Вибір кіноспільноти' : t('comm_live_analytics')}</span>
                   </h2>
                 </div>
 
@@ -1598,7 +1678,7 @@ const handleSupportProject = () => {
                         <h4 className="text-xs sm:text-sm font-bold text-white line-clamp-1 mb-2" title={hit.title}>{hit.title}</h4>
                         <div className="mt-auto flex gap-1.5">
                           <button onClick={() => handleAddGame(hit, 'backlog')} className="flex-1 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500 text-indigo-200 hover:text-white border border-indigo-400/30 text-[10px] font-bold flex items-center justify-center gap-1 transition-all">
-                            <Plus className="w-3 h-3" /> {communityTab === 'movies' ? 'У План' : 'Беклог'}
+                            <Plus className="w-3 h-3" /> {communityTab === 'movies' ? t('st_m_backlog') : t('tab_backlog')}
                           </button>
                           <button onClick={() => handleAddGame(hit, 'wishlist')} className="p-1.5 rounded-xl bg-pink-500/15 hover:bg-pink-500 text-pink-300 hover:text-white border border-pink-400/30 transition-all" title={t('to_wishlist')}>
                             <Heart className="w-3.5 h-3.5" />
@@ -1639,7 +1719,7 @@ const handleSupportProject = () => {
                       <p className="text-[10px] text-gray-400 mb-3 line-clamp-1">{tg.releaseYear} • {tg.genres?.join(', ')}</p>
                       <div className="mt-auto flex gap-1.5">
                         <button onClick={() => handleAddGame(tg, 'backlog')} className={`flex-1 py-1.5 rounded-xl text-[10px] font-bold flex items-center justify-center gap-1 transition-all border ${communityTab === 'movies' ? 'bg-rose-500/20 hover:bg-rose-500 text-rose-200 hover:text-white border-rose-400/30' : 'bg-indigo-500/20 hover:bg-indigo-500 text-indigo-200 hover:text-white border-indigo-400/30'}`}>
-                          <Plus className="w-3 h-3" /> {communityTab === 'movies' ? 'У План' : 'Беклог'}
+                          <Plus className="w-3 h-3" /> {communityTab === 'movies' ? t('st_m_backlog') : t('tab_backlog')}
                         </button>
                         <button onClick={() => handleAddGame(tg, 'wishlist')} className="p-1.5 rounded-xl bg-pink-500/15 hover:bg-pink-500 text-pink-300 hover:text-white border border-pink-400/30 transition-all" title={t('to_wishlist')}>
                           <Heart className="w-3.5 h-3.5" />
@@ -1666,7 +1746,8 @@ const handleSupportProject = () => {
                 {filteredPlaylists.map(pl => {
                   const themeCfg = PLAYLIST_THEMES[pl.theme] || PLAYLIST_THEMES.indigo;
                   const curatorName = pl.user?.username || pl.curator || 'Геймер';
-                  const isOwner = !pl.isDefault && pl.user?.username?.toLowerCase() === username?.toLowerCase();
+                  const plOwnerId = pl.user?._id || pl.user;
+                  const isOwner = !pl.isDefault && Boolean(profile._id && plOwnerId && String(plOwnerId) === String(profile._id));
                   const likesCount = Array.isArray(pl.likes) ? pl.likes.length : 0;
 
                   return (
@@ -1729,10 +1810,10 @@ const handleSupportProject = () => {
                     <button type="button" key={tag} onClick={() => setNewTopicTag(tag)} className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-all ${newTopicTag === tag ? (communityTab === 'movies' ? 'bg-rose-500/25 text-rose-200 border-rose-400/50' : 'bg-indigo-500/25 text-indigo-200 border-indigo-400/50') : 'bg-white/5 text-gray-400 border-white/10'}`}>{tag}</button>
                   ))}
                 </div>
-                <input type="text" required value={newTopicTitle} onChange={(e) => setNewTopicTitle(e.target.value)} placeholder={communityTab === 'movies' ? 'Тема (наприклад: Порадьте крутий трилер на вечір)...' : 'Тема обговорення...'} className="w-full bg-black/60 border border-white/10 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white focus:outline-none" />
+                <input type="text" required maxLength={150} value={newTopicTitle} onChange={(e) => setNewTopicTitle(e.target.value)} placeholder={communityTab === 'movies' ? 'Тема (наприклад: Порадьте крутий трилер на вечір)...' : 'Тема обговорення...'} className="w-full bg-black/60 border border-white/10 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white focus:outline-none" />
                 <div className="flex gap-2">
-                  <input type="text" required value={newTopicBody} onChange={(e) => setNewTopicBody(e.target.value)} placeholder="Напиши своє питання або рекомендацію..." className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white focus:outline-none" />
-                  <button type="submit" className={`px-5 py-2 rounded-xl text-white text-xs font-bold shrink-0 ${communityTab === 'movies' ? 'bg-rose-600 hover:bg-rose-500' : 'bg-indigo-500 hover:bg-indigo-600'}`}>Опублікувати</button>
+                  <input type="text" required maxLength={2000} value={newTopicBody} onChange={(e) => setNewTopicBody(e.target.value)} placeholder="Напиши своє питання або рекомендацію..." className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white focus:outline-none" />
+                  <button type="submit" className={`px-5 py-2 rounded-xl text-white text-xs font-bold shrink-0 ${communityTab === 'movies' ? 'bg-rose-600 hover:bg-rose-500' : 'bg-indigo-500 hover:bg-indigo-600'}`}>{t('btn_publish')}</button>
                 </div>
               </form>
 
@@ -1759,8 +1840,8 @@ const handleSupportProject = () => {
                         </div>
                       )}
                       <div className="flex gap-2 pt-1">
-                        <input type="text" value={replyTexts[disc._id] || ''} onChange={(e) => setReplyTexts(prev => ({ ...prev, [disc._id]: e.target.value }))} placeholder="Написати відповідь..." className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none" />
-                        <button type="button" onClick={() => handleReplyDiscussion(disc._id)} className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-white">Відповісти</button>
+                        <input type="text" maxLength={1000} value={replyTexts[disc._id] || ''} onChange={(e) => setReplyTexts(prev => ({ ...prev, [disc._id]: e.target.value }))} placeholder="Написати відповідь..." className="flex-1 bg-black/60 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none" />
+                        <button type="button" onClick={() => handleReplyDiscussion(disc._id)} className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-white">{t('btn_reply')}</button>
                       </div>
                     </div>
                   ))}
@@ -1839,7 +1920,7 @@ const handleSupportProject = () => {
                 <div className="space-y-2.5">
                   {leaderboard.map((player, index) => {
                     const rank = index + 1;
-                    const isCurrentUser = player.username?.toLowerCase() === username?.toLowerCase();
+                    const isCurrentUser = Boolean(profile._id && player._id && String(player._id) === String(profile._id));
                     const isTop1 = rank === 1;
                     const isTop2 = rank === 2;
                     const isTop3 = rank === 3;
@@ -1910,10 +1991,9 @@ const handleSupportProject = () => {
                 type="button"
                 onClick={handleSupportProject}
                 className="group flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.03] hover:bg-pink-500/10 border border-white/10 hover:border-pink-500/30 text-gray-400 hover:text-pink-300 transition-all active:scale-95"
-                title="Скопіювати номер картки Монобанк"
               >
                 <Heart className="w-3.5 h-3.5 group-hover:fill-pink-400 transition-colors" />
-                <span className="font-bold">Підтримати проєкт</span>
+                <span className="font-bold">{t('btn_support')}</span>
               </button>
               
               <div className="hidden md:block w-1 h-1 rounded-full bg-white/20" />
@@ -1991,7 +2071,7 @@ const handleSupportProject = () => {
               )}
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2.5">Сортувати колекцію</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2.5">{t('filter_sort')}</label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {[
                     { id: 'default', label: 'За замовчуванням' },
@@ -2021,14 +2101,14 @@ const handleSupportProject = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2.5">Рік випуску</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2.5">{t('filter_year')}</label>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    { id: 'all', label: 'Усі роки' },
+                    { id: 'all', label: t('year_all') },
                     { id: '2020s', label: '2020 – 2026' },
                     { id: '2010s', label: '2010 – 2019' },
                     { id: '2000s', label: '2000 – 2009' },
-                    { id: 'classic', label: 'До 2000 року' }
+                    { id: 'classic', label: t('year_classic') }
                   ].map(yItem => (
                     <button
                       key={yItem.id}
@@ -2049,7 +2129,7 @@ const handleSupportProject = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2.5">Жанр</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-gray-400 mb-2.5">{t('filter_genre')}</label>
                 <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto pr-1">
                   <button
                     type="button"
@@ -2062,7 +2142,7 @@ const handleSupportProject = () => {
                         : 'bg-white/[0.03] text-gray-400 border-white/10 hover:text-white'
                     }`}
                   >
-                    Усі жанри
+                    {t('genre_all')}
                   </button>
                   {availableGenres.map(g => (
                     <button
@@ -2089,7 +2169,7 @@ const handleSupportProject = () => {
                   onClick={resetAllFilters}
                   className="px-4 py-2.5 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-300 text-xs font-bold transition-all"
                 >
-                  Скинути всі фільтри
+                  {t('filter_clear_all')}
                 </button>
                 <button
                   type="button"
@@ -2106,7 +2186,7 @@ const handleSupportProject = () => {
         )}
       </AnimatePresence>
 
-      {/* МОДАЛЬНЕ ВІКНО ПРОФІЛЮ З ПЕРЕМИКАЧЕМ АЧІВОК ІГОР ТА АЧІВОК КІНО */}
+      {/* МОДАЛЬНЕ ВІКНО ПРОФІЛЮ */}
       <AnimatePresence>
         {isProfileOpen && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsProfileOpen(false)} className="fixed inset-0 bg-black/80 backdrop-blur-xl z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -2229,7 +2309,7 @@ const handleSupportProject = () => {
                         </button>
                       ))}
                     </div>
-                    <input type="text" value={customAvatarUrl} onChange={(e) => setCustomAvatarUrl(e.target.value)} placeholder="Або встав URL картинки / Steam-аватарки (https://...)" className="w-full bg-black/50 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/60" />
+                    <input type="text" value={customAvatarUrl} onChange={(e) => setCustomAvatarUrl(e.target.value)} placeholder="Або встав безпечне HTTPS-посилання (Steam, Imgur, GitHub, Gravatar)..." className="w-full bg-black/50 border border-white/10 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/60" />
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -2247,8 +2327,8 @@ const handleSupportProject = () => {
                     </div>
                   </div>
                   <div className="flex justify-end gap-2.5 pt-2">
-                    <button type="button" onClick={() => setIsProfileOpen(false)} className="px-4 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white">Закрити</button>
-                    <button type="submit" disabled={isSavingProfile} className="px-5 py-2 rounded-xl text-xs font-semibold bg-indigo-500 hover:bg-indigo-600 text-white flex items-center gap-1.5"><Check className="w-3.5 h-3.5" /> Зберегти</button>
+                    <button type="button" onClick={() => setIsProfileOpen(false)} className="px-4 py-2 rounded-xl text-xs font-medium text-gray-400 hover:text-white">{t('btn_close')}</button>
+                    <button type="submit" disabled={isSavingProfile} className="px-5 py-2 rounded-xl text-xs font-semibold bg-indigo-500 hover:bg-indigo-600 text-white flex items-center gap-1.5"><Check className="w-3.5 h-3.5" /> {t('modal_save')}</button>
                   </div>
                 </form>
               </div>
@@ -2301,7 +2381,7 @@ const handleSupportProject = () => {
                               <div className="mt-auto py-1.5 rounded-xl bg-emerald-500/20 text-emerald-300 text-[10px] font-bold text-center">✓ У колекції</div>
                             ) : (
                               <div className="mt-auto flex gap-1">
-                                <button onClick={() => handleAddGame(movie, 'backlog')} className="flex-1 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-200 hover:text-white text-[10px] font-bold transition-all">+ У План</button>
+                                <button onClick={() => handleAddGame(movie, 'backlog')} className="flex-1 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-200 hover:text-white text-[10px] font-bold transition-all">+ {t('st_m_backlog')}</button>
                                 <button onClick={() => handleAddGame(movie, 'completed')} className="px-2 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-white text-[10px] font-bold transition-all" title="Вже бачив">✓</button>
                               </div>
                             )}
@@ -2325,12 +2405,12 @@ const handleSupportProject = () => {
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsPlaylistModalOpen(false)} className="fixed inset-0 bg-black/80 backdrop-blur-xl z-50 flex items-center justify-center p-4">
             <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }} onClick={(e) => e.stopPropagation()} className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-[#0e0e14] border border-white/15 rounded-3xl p-5 sm:p-6 shadow-2xl">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xl font-extrabold text-white">Створити публічний плейлист</h3>
+                <h3 className="text-xl font-extrabold text-white">{t('comm_create_playlist')}</h3>
                 <button onClick={() => setIsPlaylistModalOpen(false)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
               </div>
               <form onSubmit={handleCreatePlaylist} className="space-y-4">
-                <input type="text" required value={plTitle} onChange={(e) => setPlTitle(e.target.value)} placeholder="Назва плейлиста..." className="w-full bg-black/50 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white" />
-                <input type="text" value={plDesc} onChange={(e) => setPlDesc(e.target.value)} placeholder="Короткий опис..." className="w-full bg-black/50 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white" />
+                <input type="text" required maxLength={120} value={plTitle} onChange={(e) => setPlTitle(e.target.value)} placeholder="Назва плейлиста..." className="w-full bg-black/50 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white" />
+                <input type="text" maxLength={500} value={plDesc} onChange={(e) => setPlDesc(e.target.value)} placeholder="Короткий опис..." className="w-full bg-black/50 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white" />
                 <div className="flex gap-2 flex-wrap">
                   {Object.entries(PLAYLIST_THEMES).map(([key, cfg]) => (
                     <button type="button" key={key} onClick={() => setPlTheme(key)} className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${plTheme === key ? 'bg-indigo-500/25 text-white border-indigo-400' : 'bg-white/5 text-gray-400 border-white/10'}`}>{cfg.label}</button>
@@ -2348,7 +2428,7 @@ const handleSupportProject = () => {
                     );
                   })}
                 </div>
-                <div className="flex justify-end gap-2"><button type="submit" disabled={isSavingPlaylist} className="px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-500 text-white">Опублікувати</button></div>
+                <div className="flex justify-end gap-2"><button type="submit" disabled={isSavingPlaylist} className="px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-500 text-white">{t('btn_publish')}</button></div>
               </form>
             </motion.div>
           </motion.div>
@@ -2381,7 +2461,7 @@ const handleSupportProject = () => {
         )}
       </AnimatePresence>
 
-{/* ДЕТАЛІ ГРИ / ФІЛЬМУ */}
+      {/* ДЕТАЛІ ГРИ / ФІЛЬМУ */}
       <AnimatePresence>
         {selectedGame && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedGame(null)} className="fixed inset-0 bg-black/75 backdrop-blur-xl z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -2392,7 +2472,7 @@ const handleSupportProject = () => {
                     src={selectedGame.imageUrl || 'https://via.placeholder.com/120x160/1a1a1a/ffffff?text=Cover'}
                     alt={selectedGame.title}
                     onError={(e) => { if (e.target.src.includes('library_600x900.jpg')) e.target.src = e.target.src.replace('library_600x900.jpg', 'header.jpg'); }}
-                    className="w-16 h-22 sm:w-20 sm:h-28 object-cover rounded-2xl border border-white/15 shadow-lg shrink-0 bg-black"
+                    className="w-16 h-24 sm:w-20 sm:h-28 object-cover rounded-2xl border border-white/15 shadow-lg shrink-0 bg-black"
                   />
                   <div className="min-w-0">
                     <h2 className="text-lg sm:text-2xl font-extrabold text-white truncate">{selectedGame.title}</h2>
@@ -2416,6 +2496,7 @@ const handleSupportProject = () => {
                   <X className="w-5 h-5" />
                 </button>
               </div>
+
               <form onSubmit={handleSaveDetails} className="space-y-4">
                 <div className="bg-white/[0.02] border border-white/[0.08] rounded-2xl p-4 text-center">
                   <div style={{ color: sliderStyle.color, textShadow: sliderStyle.textShadow }} className="text-4xl font-black mb-2">{ratingInput ? `${ratingInput} / 10` : '—'}</div>
@@ -2429,15 +2510,15 @@ const handleSupportProject = () => {
                   </div>
                 )}
                 <div>
-                  <label className="text-xs text-gray-400">Години ({playtimeInput} год)</label>
+                  <label className="text-xs text-gray-400">Години ({playtimeInput} {t('hours_short')})</label>
                   <div className="flex flex-wrap gap-1.5 my-2">
                     {[0.5, 1, 2, 3, 5].map((h) => (
-                      <button key={h} type="button" onClick={() => handleAddSessionHours(h)} className="px-2.5 py-1 rounded-xl bg-white/5 hover:bg-indigo-500/30 border border-white/10 text-xs font-semibold text-gray-200">+{h} год</button>
+                      <button key={h} type="button" onClick={() => handleAddSessionHours(h)} className="px-2.5 py-1 rounded-xl bg-white/5 hover:bg-indigo-500/30 border border-white/10 text-xs font-semibold text-gray-200">+{h} {t('hours_short')}</button>
                     ))}
                   </div>
-                  <input type="number" step="0.1" min="0" value={playtimeInput} onChange={(e) => setPlaytimeInput(e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+                  <input type="number" step="0.1" min="0" max="100000" value={playtimeInput} onChange={(e) => setPlaytimeInput(e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
                 </div>
-                <textarea rows="2" value={commentInput} onChange={(e) => setCommentInput(e.target.value)} placeholder={t('modal_notes_ph')} className="w-full bg-black/50 border border-white/10 rounded-2xl p-3 text-sm text-white" />
+                <textarea rows="2" maxLength={2000} value={commentInput} onChange={(e) => setCommentInput(e.target.value)} placeholder={t('modal_notes_ph')} className="w-full bg-black/50 border border-white/10 rounded-2xl p-3 text-sm text-white" />
                 <div className="flex justify-end gap-2">
                   <button type="button" onClick={() => setSelectedGame(null)} className="px-4 py-2 rounded-xl text-xs text-gray-400">{t('modal_cancel')}</button>
                   <button type="submit" disabled={isSavingDetails} className="px-5 py-2 rounded-xl text-xs font-bold bg-indigo-500 text-white">{t('modal_save')}</button>
